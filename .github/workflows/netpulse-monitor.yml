@@ -1,0 +1,123 @@
+# Free-tier monitoring loop: enqueue due checks (Java one-shot) then drain SQS (C worker).
+# Approximate cadence: every 5 minutes. GitHub may delay scheduled runs.
+# Credentials come only from repository Actions secrets — never from the repo tree.
+#
+# schedule and workflow_dispatch share this single job (identical safe configuration).
+
+name: NetPulse monitor
+
+on:
+  schedule:
+    # Every 5 minutes (actual start can slip under GitHub Actions load).
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: netpulse-monitor
+  # Serialize runs: do not cancel an in-flight drain; overlapping schedules wait.
+  cancel-in-progress: false
+
+# Least privilege: checkout only. No contents:write, packages, or id-token.
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Non-secret runtime knobs only (same for cron and manual runs).
+    env:
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      NETPULSE_SCHEDULE_ONCE: "true"
+      NETPULSE_SCHEDULER_ENABLED: "false"
+      NETPULSE_SECURITY_MODE: HEALTH_ONLY
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: never
+      NETPULSE_SQS_WAIT_SECONDS: "5"
+      NETPULSE_SQS_VISIBILITY_SECONDS: "90"
+      NETPULSE_HTTP_TIMEOUT_MS: "10000"
+      NETPULSE_WORKER_MAX_MESSAGES: "50"
+      NETPULSE_WORKER_MAX_EMPTY_RECEIVES: "2"
+      NETPULSE_WORKER_MAX_RUNTIME_SECONDS: "240"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify required secrets are present
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          NETPULSE_SQS_QUEUE_URL: ${{ secrets.NETPULSE_SQS_QUEUE_URL }}
+          NETPULSE_DB_URL: ${{ secrets.NETPULSE_DB_URL }}
+          NETPULSE_DB_USER: ${{ secrets.NETPULSE_DB_USER }}
+          NETPULSE_DB_PASSWORD: ${{ secrets.NETPULSE_DB_PASSWORD }}
+        run: |
+          missing=0
+          for name in AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+            NETPULSE_SQS_QUEUE_URL NETPULSE_DB_URL NETPULSE_DB_USER NETPULSE_DB_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build schedule-once backend jar
+        working-directory: backend
+        run: mvn -B -DskipTests package
+
+      - name: Install C worker build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libssl-dev \
+            make \
+            pkg-config
+
+      - name: Build C worker
+        working-directory: monitoring-engine
+        run: make clean && make worker && test -x build/netpulse-worker
+
+      - name: Enqueue due monitors (one-shot)
+        working-directory: backend
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          NETPULSE_SQS_QUEUE_URL: ${{ secrets.NETPULSE_SQS_QUEUE_URL }}
+          NETPULSE_DB_URL: ${{ secrets.NETPULSE_DB_URL }}
+          NETPULSE_DB_USER: ${{ secrets.NETPULSE_DB_USER }}
+          NETPULSE_DB_PASSWORD: ${{ secrets.NETPULSE_DB_PASSWORD }}
+        run: |
+          JAR=$(ls target/netpulse-backend-*.jar | head -n 1)
+          echo "Running schedule-once with jar=$(basename "$JAR")"
+          java -XX:MaxRAMPercentage=75.0 -jar "$JAR"
+
+      - name: Drain SQS with C worker (bounded)
+        working-directory: monitoring-engine
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          NETPULSE_SQS_QUEUE_URL: ${{ secrets.NETPULSE_SQS_QUEUE_URL }}
+          NETPULSE_DB_URL: ${{ secrets.NETPULSE_DB_URL }}
+          NETPULSE_DB_USER: ${{ secrets.NETPULSE_DB_USER }}
+          NETPULSE_DB_PASSWORD: ${{ secrets.NETPULSE_DB_PASSWORD }}
+        run: ./build/netpulse-worker

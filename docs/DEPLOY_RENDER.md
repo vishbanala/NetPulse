@@ -1,18 +1,25 @@
 # Deploying NetPulse on Render
 
-Exact settings for the **authenticated production** stack. Do not put secret values in git.
+Exact settings for the **authenticated** stack. Do not put secret values in git.
 
 ## Architecture
 
-| Render service | Role |
-|----------------|------|
-| **Web** (Docker) | Spring Boot API + bundled React SPA (same origin) |
-| **Worker** (Docker) | C SQS consumer → HTTP checks → Supabase |
+| Preferred free layout | Role |
+|----------------------|------|
+| **Render Free Web** (Docker) | Spring Boot API + bundled React SPA (same origin) |
+| **GitHub Actions** (cron) | One-shot Java enqueue + bounded C worker |
 | **Demo static site** (existing) | `VITE_DEMO_MODE=true` sample UI — leave unchanged |
 
 External: Supabase PostgreSQL, AWS SQS (`us-east-2`).
 
-**Scheduler** (`NETPULSE_SCHEDULER_ENABLED`) runs **only** in the Java web service. The worker has no scheduler.
+For the free layout, keep **`NETPULSE_SCHEDULER_ENABLED=false`** on Render and use Actions for scheduling/checks. See [FREE_DEPLOY_GITHUB_ACTIONS.md](FREE_DEPLOY_GITHUB_ACTIONS.md).
+
+| Optional paid layout | Role |
+|----------------------|------|
+| **Web** (Docker) | API + SPA; may set `NETPULSE_SCHEDULER_ENABLED=true` |
+| **Worker** (Docker background) | Long-running C SQS consumer |
+
+Never enable the continuous Java scheduler on Render **and** the Actions workflow at the same time (duplicate enqueue).
 
 ---
 
@@ -43,11 +50,13 @@ These are set in `backend/Dockerfile` and should remain unless you have a delibe
 | `NETPULSE_SECURITY_MODE` | `AUTHENTICATED` |
 | `NETPULSE_SESSION_COOKIE_SECURE` | `true` |
 | `NETPULSE_SESSION_COOKIE_SAME_SITE` | `Lax` |
-| `NETPULSE_SCHEDULER_ENABLED` | `false` (set `true` when ready to enqueue) |
+| `NETPULSE_SCHEDULER_ENABLED` | `false` (**required** for free + GitHub Actions) |
 | `MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS` | `never` |
 | `VITE_DEMO_MODE` (build-time) | `false` (baked into SPA) |
 
 Render injects `PORT` automatically.
+
+For free-tier monitoring, leave the scheduler off here and configure [GitHub Actions](FREE_DEPLOY_GITHUB_ACTIONS.md). Only set `NETPULSE_SCHEDULER_ENABLED=true` on a always-on web instance if Actions is disabled.
 
 ### Required environment variable **names** (Web)
 
@@ -64,7 +73,7 @@ Set in the Render dashboard (values never in git):
 - `AWS_SECRET_ACCESS_KEY`
 - `AWS_SESSION_TOKEN` (if using temporary credentials)
 
-Recommended when enabling automatic checks:
+Optional (paid always-on scheduler only — not for free + Actions):
 
 - `NETPULSE_SCHEDULER_ENABLED=true`
 

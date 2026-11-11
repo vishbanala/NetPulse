@@ -37,7 +37,7 @@ USER netpulse
 EXPOSE 8080
 
 # Production defaults: authenticated same-origin SPA + API.
-# Scheduler stays OFF until explicitly enabled on this web service only (never on the worker).
+# Scheduler OFF by default (free tier uses GitHub Actions one-shot enqueue + bounded C worker).
 ENV SERVER_ADDRESS=0.0.0.0 \
     NETPULSE_SECURITY_MODE=AUTHENTICATED \
     NETPULSE_SCHEDULER_ENABLED=false \

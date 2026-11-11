@@ -39,18 +39,18 @@ public class ProductionConfigValidator {
                 environment.getProperty("NETPULSE_DB_PASSWORD"),
                 environment.getProperty("spring.datasource.password")));
 
-        if (SecurityModes.isAuthenticated(mode)) {
-            // Admin hash/username are also validated in SecurityConfig.
-            boolean schedulerEnabled = Boolean.parseBoolean(
-                    environment.getProperty("netpulse.scheduler.enabled", "false"));
-            if (schedulerEnabled) {
-                require("AWS_REGION", firstNonBlank(
-                        environment.getProperty("AWS_REGION"),
-                        environment.getProperty("aws.region")));
-                require("NETPULSE_SQS_QUEUE_URL", firstNonBlank(
-                        environment.getProperty("NETPULSE_SQS_QUEUE_URL"),
-                        environment.getProperty("netpulse.sqs.queue-url")));
-            }
+        boolean schedulerEnabled = Boolean.parseBoolean(
+                environment.getProperty("netpulse.scheduler.enabled", "false"));
+        boolean scheduleOnce = Boolean.parseBoolean(
+                environment.getProperty("netpulse.schedule.once", "false"));
+        // Continuous ticker or GitHub Actions one-shot enqueue both need SQS configured.
+        if (schedulerEnabled || scheduleOnce) {
+            require("AWS_REGION", firstNonBlank(
+                    environment.getProperty("AWS_REGION"),
+                    environment.getProperty("aws.region")));
+            require("NETPULSE_SQS_QUEUE_URL", firstNonBlank(
+                    environment.getProperty("NETPULSE_SQS_QUEUE_URL"),
+                    environment.getProperty("netpulse.sqs.queue-url")));
         }
     }
 

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -58,6 +59,11 @@ static void usage(const char *argv0)
             "  NETPULSE_SQS_WAIT_SECONDS  default 20 (long poll)\n"
             "  NETPULSE_SQS_VISIBILITY_SECONDS default 90\n"
             "\n"
+            "Bounded run (GitHub Actions / one-shot). 0 = unlimited (daemon mode):\n"
+            "  NETPULSE_WORKER_MAX_MESSAGES         stop after N successful jobs\n"
+            "  NETPULSE_WORKER_MAX_EMPTY_RECEIVES   stop after N consecutive empty polls\n"
+            "  NETPULSE_WORKER_MAX_RUNTIME_SECONDS  stop after wall-clock seconds\n"
+            "\n"
             "Localhost-only tooling. Do not expose without authn/authz.\n",
             argv0);
 }
@@ -73,7 +79,12 @@ int main(int argc, char **argv)
     long http_timeout_ms;
     int wait_seconds;
     int visibility_seconds;
+    long max_messages;
+    long max_empty_receives;
+    long max_runtime_seconds;
     int processed = 0;
+    int empty_streak = 0;
+    time_t started_at;
     unsigned int auth_backoff_sec = 1;
 
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
@@ -92,6 +103,10 @@ int main(int argc, char **argv)
     http_timeout_ms = env_long("NETPULSE_HTTP_TIMEOUT_MS", 10000);
     wait_seconds = (int)env_long("NETPULSE_SQS_WAIT_SECONDS", 20);
     visibility_seconds = (int)env_long("NETPULSE_SQS_VISIBILITY_SECONDS", 90);
+    max_messages = env_long("NETPULSE_WORKER_MAX_MESSAGES", 0);
+    max_empty_receives = env_long("NETPULSE_WORKER_MAX_EMPTY_RECEIVES", 0);
+    max_runtime_seconds = env_long("NETPULSE_WORKER_MAX_RUNTIME_SECONDS", 0);
+    started_at = time(NULL);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -127,8 +142,11 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    fprintf(stdout, "netpulse-worker started region=%s wait=%ds visibility=%ds\n",
-            region, wait_seconds, visibility_seconds);
+    fprintf(stdout,
+            "netpulse-worker started region=%s wait=%ds visibility=%ds "
+            "max_messages=%ld max_empty=%ld max_runtime_s=%ld\n",
+            region, wait_seconds, visibility_seconds,
+            max_messages, max_empty_receives, max_runtime_seconds);
     fflush(stdout);
 
     while (!g_stop) {
@@ -138,6 +156,14 @@ int main(int argc, char **argv)
         int rr;
         int insert_rc;
         char guard_err[256];
+
+        if (max_runtime_seconds > 0
+                && (long)(time(NULL) - started_at) >= max_runtime_seconds) {
+            fprintf(stdout, "Max runtime reached (%ld s); stopping after %d jobs\n",
+                    max_runtime_seconds, processed);
+            fflush(stdout);
+            break;
+        }
 
         rr = np_sqs_receive(sqs, wait_seconds, visibility_seconds, &msg, err, sizeof(err));
         if (g_stop) {
@@ -167,8 +193,17 @@ int main(int argc, char **argv)
         }
         auth_backoff_sec = 1;
         if (rr == 0) {
+            empty_streak++;
+            if (max_empty_receives > 0 && empty_streak >= max_empty_receives) {
+                fprintf(stdout,
+                        "Idle exit after %d empty receive(s); processed=%d\n",
+                        empty_streak, processed);
+                fflush(stdout);
+                break;
+            }
             continue; /* empty long-poll */
         }
+        empty_streak = 0;
 
         fprintf(stdout, "Received SQS messageId=%s\n", msg.message_id);
         fflush(stdout);
@@ -220,6 +255,12 @@ int main(int argc, char **argv)
         processed++;
         fprintf(stdout, "Completed jobId=%s (processed=%d)\n", job.job_id, processed);
         fflush(stdout);
+
+        if (max_messages > 0 && processed >= max_messages) {
+            fprintf(stdout, "Max messages reached (%ld); stopping\n", max_messages);
+            fflush(stdout);
+            break;
+        }
     }
 
     fprintf(stdout, "Shutting down gracefully after %d jobs\n", processed);
