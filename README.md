@@ -1,143 +1,186 @@
 # NetPulse
 
-Distributed website monitoring platform that schedules HTTP checks, runs them on a multithreaded C worker fleet via AWS SQS, records results in PostgreSQL, detects outages and recoveries, and surfaces analytics in a React dashboard.
+**A full-stack website uptime monitoring platform built with Java, C, AWS SQS, PostgreSQL, and React.**
 
-Built as a backend-focused portfolio project for software engineering internship applications.
+NetPulse monitors approved websites, records HTTP availability and latency, tracks uptime history, and opens or resolves incidents when sites fail or recover. Scheduling, check execution, and the dashboard are separated through an asynchronous SQS-backed pipeline.
 
-## Tech stack
+**[Live Production App](https://netpulse-production.onrender.com) · [Interactive Demo](https://netpulse-dashboard-pcyf.onrender.com)**
+
+## Overview
+
+NetPulse is a portfolio project that connects a Spring Boot API, a native C monitoring worker, Amazon SQS, and Supabase PostgreSQL.
+
+On the free-tier deployment, a GitHub Actions workflow periodically runs a one-shot Java scheduler (claim due monitors → publish SQS jobs) and a bounded C worker (receive jobs → HTTP check → persist results). The authenticated React dashboard is served from the same Spring Boot process on Render and reads monitors, checks, stats, and incidents from PostgreSQL.
+
+## Features
+
+- **Website monitoring** — HTTP/HTTPS availability checks for allowlisted URLs
+- **Uptime tracking** — health, response times, check history, and stats in the dashboard
+- **Incident detection** — open after two consecutive failures; resolve after one success
+- **Asynchronous processing** — Java scheduling publishes jobs to Amazon SQS; the C worker consumes them
+- **Monitor management** — create, update, pause, and delete monitors in the UI
+- **Authentication** — production management uses Spring Security sessions (BCrypt, HttpOnly cookies, CSRF)
+- **Security controls** — URL allowlisting, SSRF guards, no automatic redirects, timeouts, bounded response reads
+- **Interactive demo** — sample UI with `VITE_DEMO_MODE=true` (localStorage only; no live checks)
+
+## Tech Stack
 
 | Layer | Technologies |
 |-------|----------------|
-| API & scheduler | Java 21, Spring Boot, JDBC |
-| Monitoring worker | C11, libcurl, libpq, pthreads, AWS SigV4 |
-| Messaging | AWS SQS (`us-east-2`) |
+| Frontend | React, TypeScript, Vite, Tailwind CSS, Recharts |
+| Backend | Java 17+ (21 preferred), Spring Boot, Spring Security, JDBC |
+| Monitoring engine | C11, libcurl, libpq, AWS SigV4 SQS client |
 | Database | PostgreSQL (Supabase) |
-| Dashboard | React, TypeScript, Vite, Tailwind CSS, Recharts |
+| Messaging | Amazon SQS (`us-east-2`) |
+| Infrastructure | Docker, Render |
+| Automation | GitHub Actions |
 
-## Key features
-
-- **Automatic website monitoring** — periodic HTTP(S) probes with configurable intervals
-- **Distributed workers** — SQS-backed C workers scale independently of the API
-- **Job scheduling** — durable leases with `FOR UPDATE SKIP LOCKED` (opt-in scheduler)
-- **Incident detection** — opens an incident after two consecutive failures
-- **Recovery tracking** — resolves the open incident after one successful check
-- **Analytics dashboard** — uptime, latency charts, recent checks, and incident history
-
-## Architecture
+## System Architecture
 
 ```mermaid
-flowchart LR
-  UI[React dashboard] -->|REST /api| API[Spring Boot API]
-  API -->|publish jobs| SQS[AWS SQS]
-  Sched[Opt-in scheduler] -->|claim due monitors| API
-  SQS -->|long poll| Worker[C monitoring workers]
-  Worker -->|HTTP probes| Web[Monitored websites]
-  Worker -->|record check + incidents| DB[(Supabase PostgreSQL)]
-  API -->|reads monitors / stats / incidents| DB
+flowchart TD
+    U["User"] --> FE["React Dashboard"]
+    FE --> API["Spring Boot API + SPA"]
+    API <--> DB[("Supabase PostgreSQL")]
+
+    GH["GitHub Actions"] --> SCH["Java schedule-once"]
+    GH --> WORKER["C SQS worker"]
+    SCH <--> DB
+    SCH --> SQS["Amazon SQS"]
+    SQS --> WORKER
+    WORKER --> WEB["Monitored websites"]
+    WORKER --> DB
 ```
 
-**Flow:** the API (or scheduler) enqueues a monitoring job on SQS → a C worker receives it, probes the URL, and calls `netpulse_record_monitoring_check` in PostgreSQL → the function inserts the check and opens/resolves incidents atomically → the dashboard reads monitors, checks, stats, and incidents from the API.
+### Monitoring workflow
 
-## Repository layout
+1. An admin creates a monitor in the dashboard; Spring Boot validates the URL against the allowlist and stores it in PostgreSQL.
+2. GitHub Actions starts a headless Java **schedule-once** run (`NETPULSE_SCHEDULE_ONCE=true`).
+3. The scheduler claims due rows with `FOR UPDATE SKIP LOCKED` and publishes jobs to SQS.
+4. The same workflow runs the C worker, which long-polls SQS, probes each URL (HEAD, with bounded GET fallback), and writes results via PostgreSQL.
+5. Incident open/resolve logic runs with the check insert.
+6. The dashboard loads monitors, stats, checks, and incidents through the REST API.
+
+On Render Free, keep `NETPULSE_SCHEDULER_ENABLED=false` so a waking web instance does not double-enqueue. Details: [`docs/FREE_DEPLOY_GITHUB_ACTIONS.md`](docs/FREE_DEPLOY_GITHUB_ACTIONS.md).
+
+## Engineering Highlights
+
+- **Queue-backed execution** — scheduling and probing fail independently; SQS buffers work.
+- **Transactional scheduling** — PostgreSQL leases and stable `pending_job_id` values reduce duplicate publishes under concurrency.
+- **Native worker** — C + libcurl/libpq with allowlisting, timeouts, no redirect following, and capped body reads so large healthy pages (for example Google) are not marked down by size limits.
+- **Incidents** — two consecutive failures open an incident; one success resolves it.
+- **Production auth** — `NETPULSE_SECURITY_MODE=AUTHENTICATED` with BCrypt admin hash, secure session cookies, and CSRF.
+
+## Repository Layout
 
 ```
 backend/              Spring Boot API, scheduler, SQL migrations
 monitoring-engine/    C probe CLI + SQS worker
 frontend/             React + TypeScript dashboard
+docs/                 Render and GitHub Actions deployment notes
+.github/workflows/    Free-tier monitor workflow
 ```
 
-## Local setup
+## Running Locally
 
 ### Prerequisites
 
 - JDK 17+ (21 preferred) and Maven
 - Node.js 20+
-- MSYS2 UCRT64 (or Linux) with `gcc`, `make`, `libcurl`, `libpq`
-- Supabase PostgreSQL project
-- AWS account with an SQS queue in `us-east-2`
-- SQL migrations `001`–`006` applied in the Supabase SQL Editor (`backend/db/migrations/`)
+- `gcc`, `make`, libcurl, and libpq (MSYS2 UCRT64 on Windows, or Linux packages)
+- Supabase PostgreSQL with migrations `001`–`006` applied (`backend/db/migrations/`)
+- AWS SQS queue in `us-east-2` and credentials via the default provider chain
 
-### 1. Environment
+### 1. Configure environment
 
-```powershell
-cd backend
-Copy-Item .env.example .env   # fill NETPULSE_DB_* and AWS values; never commit .env
+```bash
+cp backend/.env.example backend/.env
+# Edit backend/.env — never commit real secrets
 ```
-
-Required variables (also listed in `backend/.env.example`):
 
 | Variable | Purpose |
 |----------|---------|
 | `NETPULSE_DB_URL` | JDBC URL (`sslmode=require`) |
-| `NETPULSE_DB_USER` | Database user (pooler: `postgres.<project_ref>`) |
+| `NETPULSE_DB_USER` | Database user |
 | `NETPULSE_DB_PASSWORD` | Database password |
-| `AWS_REGION` | `us-east-2` |
-| `NETPULSE_SQS_QUEUE_URL` | Full SQS queue URL |
+| `AWS_REGION` | e.g. `us-east-2` |
+| `NETPULSE_SQS_QUEUE_URL` | SQS queue URL |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Optional if using profile/role |
+| `NETPULSE_PG_CONNINFO` | Optional direct libpq URI for the C worker |
 
-Use the AWS default credential chain (`AWS_PROFILE`, env keys, or shared credentials). Do not hardcode secrets.
+The worker accepts `NETPULSE_PG_CONNINFO` **or** the same `NETPULSE_DB_URL` / `USER` / `PASSWORD` trio (JDBC URL is parsed for libpq).
+
+Local API default: `NETPULSE_SECURITY_MODE=UNAUTHENTICATED_LOCALHOST_ONLY`, bind `127.0.0.1:8080`. Scheduler remains off unless `NETPULSE_SCHEDULER_ENABLED=true`.
 
 ### 2. Backend
 
-```powershell
+```bash
 cd backend
-# Load DB + AWS env vars into this shell
+mvn test
 mvn spring-boot:run
 ```
 
-API binds to `127.0.0.1:8080` by default (**unauthenticated — localhost only**).
+### 3. Monitoring engine
 
-Scheduler is **off** unless you set `NETPULSE_SCHEDULER_ENABLED=true`.
-
-### 3. C worker
-
-```powershell
-$env:Path = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;" + $env:Path
+```bash
 cd monitoring-engine
 make test
 make worker
-.\build\netpulse-worker.exe
+./build/netpulse-worker          # or netpulse-worker.exe on Windows
 ```
+
+`make` (default) builds the local multi-URL probe CLI; `make worker` builds the SQS consumer used in production/Actions.
 
 ### 4. Frontend
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173 (Vite proxies `/api` → `http://localhost:8080`).
+Open http://localhost:5173. Vite proxies `/api` to `http://localhost:8080`.
 
-### Public demo (Render)
+Production builds the SPA into the Spring Boot jar (same origin). Demo static hosting uses `VITE_DEMO_MODE=true` at build time.
 
-Build the frontend with `VITE_DEMO_MODE=true` to serve an interactive sample dashboard (localStorage CRUD, no backend / Supabase / AWS). The UI shows **Demo Mode — Sample Data**.
+## Deployment
 
-## API overview
+| Component | Hosting |
+|-----------|---------|
+| Production dashboard + API | Render Free Web Service (Docker: `backend/Dockerfile`, context `.`) |
+| Schedule + C worker | GitHub Actions (`.github/workflows/netpulse-monitor.yml`, ~every 5 minutes + manual) |
+| PostgreSQL | Supabase |
+| Job queue | Amazon SQS |
+| Interactive demo | Render Static Site (`VITE_DEMO_MODE=true`) |
 
-Base URL: `http://127.0.0.1:8080`
+Render production expects `NETPULSE_SECURITY_MODE=AUTHENTICATED`, secure cookies (`SameSite=Lax`), and `NETPULSE_SCHEDULER_ENABLED=false` when Actions owns scheduling. See [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md) and [`docs/FREE_DEPLOY_GITHUB_ACTIONS.md`](docs/FREE_DEPLOY_GITHUB_ACTIONS.md).
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/health` | Liveness |
-| `GET` | `/actuator/health` | Actuator health (includes DB) |
-| `GET` | `/api/monitors` | List monitors |
-| `POST` | `/api/monitors` | Create monitor |
-| `GET` | `/api/monitors/{id}` | Get monitor |
-| `PUT` | `/api/monitors/{id}` | Update / enable / disable |
-| `DELETE` | `/api/monitors/{id}` | Delete monitor |
-| `POST` | `/api/monitors/{id}/check` | Enqueue one SQS check job (`202`) |
-| `GET` | `/api/monitors/{id}/checks` | Recent check history |
-| `GET` | `/api/monitors/{id}/stats` | Uptime / latency summary |
-| `GET` | `/api/monitors/{id}/incidents` | Incident history |
+### Limitations
 
-Monitored URLs are restricted by an allowlist in both the API and the C worker (SSRF protection).
+- GitHub Actions cron can drift or skip under load.
+- Render Free may sleep when idle (cold starts for the dashboard).
+- Only allowlisted URLs can be monitored.
+- The demo uses sample data and does not run real checks.
+- Provider free-tier quotas and pricing still apply.
 
-## Security notes
+## Testing
 
-- The API is intentionally **unauthenticated** and bound to localhost for development.
-- Secrets live in environment variables / `.env` (gitignored) — never in source.
-- Do not expose the API or worker publicly without auth, TLS, and least-privilege IAM.
+```bash
+cd backend && mvn test
+cd monitoring-engine && make test
+cd frontend && npm test && npm run build
+```
 
-## License
+Coverage includes allowlist/URL validation, scheduling leases, HTTP success/failure/timeout classification, large healthy responses, auth/CSRF paths, and worker job parsing.
 
-Educational / portfolio project. Add a license of your choice before publishing if needed.
+## Live Applications
+
+- **Production:** https://netpulse-production.onrender.com — real data; admin login required  
+- **Demo:** https://netpulse-dashboard-pcyf.onrender.com — interactive sample UI only  
+
+## Author
+
+**Vishwajith Banala**  
+Computer Science & Finance — Rutgers University  
+
+[GitHub](https://github.com/vishbanala)
