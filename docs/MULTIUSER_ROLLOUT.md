@@ -14,21 +14,21 @@ Public register/login with per-user dashboards on `feature/public-multiuser`.
 
 ## Migrations (manual, after backup)
 
-1. If production already has monitors and **no** `users` rows yet, insert the real admin first:
+**Single-pass** (preferred on Windows):
 
-```sql
-INSERT INTO users (email, password_hash, role, email_verified_at)
-VALUES ('YOUR_ADMIN_EMAIL', 'YOUR_BCRYPT_HASH_FROM_ENV', 'ADMIN', NOW());
+```powershell
+cd backend\db\scripts
+# NETPULSE_ADMIN_EMAIL + NETPULSE_ADMIN_PASSWORD_HASH and PG* must already be set
+.\Apply-MultiuserMigrations.ps1
 ```
 
-Use the same values as `NETPULSE_ADMIN_EMAIL` / `NETPULSE_ADMIN_PASSWORD_HASH`.  
-Migration **007 never inserts a default password**.
+This binds the real admin into the session via `set_config` (no default password in SQL),
+applies `007` (creates users, owns legacy monitors), then `008` (min interval 300s).
 
-2. Apply `backend/db/migrations/007_users_and_monitor_ownership.sql`  
-   (assigns existing monitors to the earliest ADMIN, else earliest user)
-3. Apply `backend/db/migrations/008_monitor_limits.sql`
+See `docs/PRODUCTION_UPGRADE_MULTIUSER.md` for backup/restore commands and Render+Actions cutover.
 
-Rollback (destroys ownership mapping): `008_rollback.sql` then `007_rollback.sql`.
+Rollback (destroys ownership mapping / users): `008_rollback.sql` then `007_rollback.sql`.
+Prefer restoring the pre-upgrade dump if real users already registered.
 
 ## Environment
 

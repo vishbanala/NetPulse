@@ -1,14 +1,15 @@
 -- NetPulse multi-user ownership (additive).
 -- Apply manually after backup. Do not store credentials in this file.
 --
--- Backfill / admin ownership:
---   1. If monitors already exist and users is empty, INSERT the real bootstrap admin FIRST
---      using NETPULSE_ADMIN_EMAIL + NETPULSE_ADMIN_PASSWORD_HASH from your environment, e.g.:
---        INSERT INTO users (email, password_hash, role, email_verified_at)
---        VALUES ('you@example.com', '$2a$10$YOUR_REAL_HASH...', 'ADMIN', NOW());
---      Then re-run this migration (or the ownership UPDATE below).
---   2. This migration NEVER inserts a default/known password hash.
---   3. AdminUserBootstrap (AUTHENTICATED startup) upserts the same admin from env.
+-- Single-pass admin bootstrap when monitors already exist and users is empty:
+--   In the SAME database session, before this file, bind admin credentials from env
+--   (never commit the values), e.g. via backend/db/scripts/Apply-MultiuserMigrations.ps1
+--   or:
+--     SELECT set_config('netpulse.admin_email', '<from NETPULSE_ADMIN_EMAIL>', false);
+--     SELECT set_config('netpulse.admin_password_hash', '<from NETPULSE_ADMIN_PASSWORD_HASH>', false);
+--
+-- This migration NEVER embeds a default/known password hash.
+-- AdminUserBootstrap (AUTHENTICATED startup) re-upserts the same admin from env.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -71,17 +72,27 @@ DECLARE
     admin_id UUID;
     monitor_count INTEGER;
     user_count INTEGER;
+    admin_email TEXT;
+    admin_hash TEXT;
 BEGIN
     SELECT COUNT(*) INTO monitor_count FROM monitors;
     SELECT COUNT(*) INTO user_count FROM users;
 
     IF monitor_count > 0 AND user_count = 0 THEN
-        RAISE EXCEPTION
-            'monitors exist but users is empty: insert bootstrap admin with NETPULSE_ADMIN_EMAIL + NETPULSE_ADMIN_PASSWORD_HASH, then re-run migration 007';
-    END IF;
+        admin_email := nullif(lower(trim(current_setting('netpulse.admin_email', true))), '');
+        admin_hash := nullif(trim(current_setting('netpulse.admin_password_hash', true)), '');
 
-    IF user_count > 0 THEN
-        -- Prefer an ADMIN row; otherwise earliest user.
+        IF admin_email IS NULL OR admin_hash IS NULL OR left(admin_hash, 2) <> '$2' THEN
+            RAISE EXCEPTION
+                'Existing monitors require a bootstrap admin in this session. Before re-running 007, set netpulse.admin_email and netpulse.admin_password_hash (BCrypt from NETPULSE_ADMIN_*) via set_config or Apply-MultiuserMigrations.ps1. No default password is embedded in this migration.';
+        END IF;
+
+        INSERT INTO users (email, password_hash, role, email_verified_at)
+        VALUES (admin_email, admin_hash, 'ADMIN', NOW())
+        RETURNING id INTO admin_id;
+
+        UPDATE monitors SET user_id = admin_id WHERE user_id IS NULL;
+    ELSIF user_count > 0 THEN
         SELECT id INTO admin_id
         FROM users
         ORDER BY CASE WHEN role = 'ADMIN' THEN 0 ELSE 1 END, created_at ASC
@@ -93,7 +104,7 @@ END $$;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM monitors WHERE user_id IS NULL) THEN
-        RAISE EXCEPTION 'monitors.user_id backfill incomplete: create a users row then re-run ownership update';
+        RAISE EXCEPTION 'monitors.user_id backfill incomplete: bootstrap admin and re-run ownership update';
     END IF;
 END $$;
 
