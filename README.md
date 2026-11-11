@@ -108,6 +108,10 @@ npm run dev
 
 Open http://localhost:5173 (Vite proxies `/api` → `http://localhost:8080`).
 
+### Public demo (Render)
+
+Build the frontend with `VITE_DEMO_MODE=true` to serve an interactive sample dashboard (localStorage CRUD, no backend / Supabase / AWS). The UI shows **Demo Mode — Sample Data**.
+
 ## API overview
 
 Base URL: `http://127.0.0.1:8080`

@@ -4,9 +4,15 @@ interface SidebarProps {
   onRefresh: () => void
   onAddMonitor: () => void
   refreshing?: boolean
+  demoMode?: boolean
 }
 
-export function Sidebar({ onRefresh, onAddMonitor, refreshing = false }: SidebarProps) {
+export function Sidebar({
+  onRefresh,
+  onAddMonitor,
+  refreshing = false,
+  demoMode = false,
+}: SidebarProps) {
   return (
     <aside className="flex w-full flex-col border-b border-line/80 bg-ink/40 px-5 py-5 backdrop-blur-md md:w-64 md:border-b-0 md:border-r md:px-6 md:py-8">
       <div className="mb-8">
@@ -22,6 +28,11 @@ export function Sidebar({ onRefresh, onAddMonitor, refreshing = false }: Sidebar
         <p className="mt-2 text-sm leading-relaxed text-mist">
           Track uptime, response time, and outages for the sites you care about.
         </p>
+        {demoMode ? (
+          <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2.5 py-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-200">
+            Demo Mode — Sample Data
+          </p>
+        ) : null}
       </div>
 
       <nav className="flex flex-1 flex-col gap-1" aria-label="Primary">

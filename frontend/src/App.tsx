@@ -6,6 +6,7 @@ import type { Monitor, MonitorWriteRequest } from './api/types'
 import { createMonitor, deleteMonitor, updateMonitor } from './api/monitors'
 import { ChecksTable } from './components/ChecksTable'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { DemoModeBanner } from './components/DemoModeBanner'
 import { EmptyState } from './components/EmptyState'
 import { ErrorState } from './components/ErrorState'
 import { IncidentsSection } from './components/IncidentsSection'
@@ -16,6 +17,7 @@ import { ResponseTimeChart } from './components/ResponseTimeChart'
 import { Sidebar } from './components/Sidebar'
 import { SummaryCards } from './components/SummaryCards'
 import { ToastStack } from './components/Toast'
+import { isDemoMode } from './demo/mode'
 import { useMonitorDashboard } from './hooks/useMonitorDashboard'
 import { useToasts } from './hooks/useToasts'
 import { formatTimestamp } from './utils/format'
@@ -23,6 +25,7 @@ import { formatTimestamp } from './utils/format'
 type FormMode = 'create' | 'edit'
 
 export default function App() {
+  const demoMode = isDemoMode()
   const { data, loading, error, selectMonitor, refresh } = useMonitorDashboard()
   const { toasts, push, dismiss } = useToasts()
 
@@ -130,13 +133,16 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen md:flex">
+    <div className="min-h-screen md:flex md:flex-col">
       <ToastStack toasts={toasts} onDismiss={dismiss} />
+      {demoMode ? <DemoModeBanner /> : null}
 
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
       <Sidebar
         onRefresh={() => void refresh()}
         onAddMonitor={openCreate}
         refreshing={loading && data != null}
+        demoMode={demoMode}
       />
 
       <main id="overview" className="flex-1 px-4 py-6 md:px-8 md:py-8">
@@ -177,6 +183,7 @@ export default function App() {
                   {data.stats?.lastCheckedAt ? (
                     <p className="font-mono text-xs text-mist/80">
                       Last check {formatTimestamp(data.stats.lastCheckedAt)}
+                      {demoMode ? ' · sample' : ''}
                     </p>
                   ) : null}
                 </div>
@@ -228,6 +235,7 @@ export default function App() {
           )
         ) : null}
       </main>
+      </div>
 
       <MonitorFormModal
         open={formOpen}
