@@ -1,0 +1,93 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDEs / editors
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.code-workspace
+
+# Environment and secrets — never commit
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.p12
+*.jks
+*.key
+secrets/
+credentials.json
+**/credentials
+.aws/
+aws.xml
+
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+replay_pid*
+.mvn/wrapper/maven-wrapper.jar
+mvn-test-out.txt
+
+# C / native
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+monitoring-engine/build/
+
+# Node / React / Vite
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+
+# Testing / coverage
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/
+
+# Terraform / cloud scaffolding leftovers
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+cdk.out/
+.aws-sam/
+
+# Logs and temp
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Local agent / editor state
+.cursor/
