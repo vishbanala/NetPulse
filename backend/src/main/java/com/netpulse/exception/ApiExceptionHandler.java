@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -16,10 +17,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.netpulse.security.SecurityModes;
+
 import jakarta.validation.ConstraintViolationException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+    @Value("${netpulse.security.mode:UNAUTHENTICATED_LOCALHOST_ONLY}")
+    private String securityMode;
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
@@ -85,7 +91,11 @@ public class ApiExceptionHandler {
         body.put("status", status.value());
         body.put("error", status.getReasonPhrase());
         body.put("message", message);
-        body.put("securityNotice", "UNAUTHENTICATED_LOCALHOST_ONLY");
+        // Only advertise the local-dev notice when that mode is actually active.
+        if (SecurityModes.UNAUTHENTICATED_LOCALHOST_ONLY.equalsIgnoreCase(
+                securityMode == null ? "" : securityMode.trim())) {
+            body.put("securityNotice", SecurityModes.UNAUTHENTICATED_LOCALHOST_ONLY);
+        }
         return body;
     }
 }

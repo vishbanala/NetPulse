@@ -1,10 +1,13 @@
-import { Activity, LayoutDashboard, Plus, RefreshCw } from 'lucide-react'
+import { Activity, LayoutDashboard, LogOut, Plus, RefreshCw } from 'lucide-react'
 
 interface SidebarProps {
   onRefresh: () => void
   onAddMonitor: () => void
   refreshing?: boolean
   demoMode?: boolean
+  username?: string | null
+  onLogout?: () => void
+  logoutBusy?: boolean
 }
 
 export function Sidebar({
@@ -12,6 +15,9 @@ export function Sidebar({
   onAddMonitor,
   refreshing = false,
   demoMode = false,
+  username = null,
+  onLogout,
+  logoutBusy = false,
 }: SidebarProps) {
   return (
     <aside className="flex w-full flex-col border-b border-line/80 bg-ink/40 px-5 py-5 backdrop-blur-md md:w-64 md:border-b-0 md:border-r md:px-6 md:py-8">
@@ -31,6 +37,11 @@ export function Sidebar({
         {demoMode ? (
           <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2.5 py-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-200">
             Demo Mode — Sample Data
+          </p>
+        ) : null}
+        {!demoMode && username ? (
+          <p className="mt-3 font-mono text-[11px] text-mist">
+            Signed in as <span className="text-snow">{username}</span>
           </p>
         ) : null}
       </div>
@@ -63,6 +74,17 @@ export function Sidebar({
           <RefreshCw className={`size-4 ${refreshing ? 'animate-spin' : ''}`} />
           Refresh
         </button>
+        {onLogout ? (
+          <button
+            type="button"
+            onClick={onLogout}
+            disabled={logoutBusy}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-line px-3 py-2.5 text-sm font-medium text-mist transition hover:border-bad/40 hover:text-bad disabled:opacity-60"
+          >
+            <LogOut className="size-4" />
+            {logoutBusy ? 'Signing out…' : 'Sign out'}
+          </button>
+        ) : null}
       </div>
     </aside>
   )

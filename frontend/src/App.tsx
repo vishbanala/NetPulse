@@ -11,13 +11,14 @@ import { EmptyState } from './components/EmptyState'
 import { ErrorState } from './components/ErrorState'
 import { IncidentsSection } from './components/IncidentsSection'
 import { LoadingState } from './components/LoadingState'
+import { LoginScreen } from './components/LoginScreen'
 import { MonitorFormModal } from './components/MonitorFormModal'
 import { MonitorList } from './components/MonitorList'
 import { ResponseTimeChart } from './components/ResponseTimeChart'
 import { Sidebar } from './components/Sidebar'
 import { SummaryCards } from './components/SummaryCards'
 import { ToastStack } from './components/Toast'
-import { isDemoMode } from './demo/mode'
+import { useAuth } from './hooks/useAuth'
 import { useMonitorDashboard } from './hooks/useMonitorDashboard'
 import { useToasts } from './hooks/useToasts'
 import { formatTimestamp } from './utils/format'
@@ -25,9 +26,63 @@ import { formatTimestamp } from './utils/format'
 type FormMode = 'create' | 'edit'
 
 export default function App() {
-  const demoMode = isDemoMode()
-  const { data, loading, error, selectMonitor, refresh } = useMonitorDashboard()
+  const auth = useAuth()
   const { toasts, push, dismiss } = useToasts()
+
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen">
+        <ToastStack toasts={toasts} onDismiss={dismiss} />
+        <LoadingState />
+      </div>
+    )
+  }
+
+  if (!auth.demoMode && !auth.isAuthenticated) {
+    return (
+      <div className="min-h-screen">
+        <ToastStack toasts={toasts} onDismiss={dismiss} />
+        <LoginScreen
+          bootstrapError={auth.error}
+          onLogin={async (username, password) => {
+            await auth.login(username, password)
+            push('success', 'Signed in', username)
+          }}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <AuthenticatedShell
+      demoMode={auth.demoMode}
+      username={auth.user?.username ?? null}
+      onLogout={
+        auth.demoMode
+          ? undefined
+          : async () => {
+              await auth.logout()
+              push('success', 'Signed out')
+            }
+      }
+      toasts={toasts}
+      push={push}
+      dismiss={dismiss}
+    />
+  )
+}
+
+interface ShellProps {
+  demoMode: boolean
+  username: string | null
+  onLogout?: () => Promise<void>
+  toasts: ReturnType<typeof useToasts>['toasts']
+  push: ReturnType<typeof useToasts>['push']
+  dismiss: ReturnType<typeof useToasts>['dismiss']
+}
+
+function AuthenticatedShell({ demoMode, username, onLogout, toasts, push, dismiss }: ShellProps) {
+  const { data, loading, error, selectMonitor, refresh } = useMonitorDashboard()
 
   const [formOpen, setFormOpen] = useState(false)
   const [formMode, setFormMode] = useState<FormMode>('create')
@@ -38,9 +93,9 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState<Monitor | null>(null)
   const [deleteSubmitting, setDeleteSubmitting] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [logoutBusy, setLogoutBusy] = useState(false)
 
-  const selectedMonitor =
-    data?.monitors.find((m) => m.id === data.selectedId) ?? null
+  const selectedMonitor = data?.monitors.find((m) => m.id === data.selectedId) ?? null
 
   const openCreate = () => {
     setFormMode('create')
@@ -97,11 +152,7 @@ export default function App() {
         intervalSeconds: monitor.intervalSeconds,
         enabled: !monitor.enabled,
       })
-      push(
-        'success',
-        updated.enabled ? 'Monitoring resumed' : 'Monitoring paused',
-        updated.name,
-      )
+      push('success', updated.enabled ? 'Monitoring resumed' : 'Monitoring paused', updated.name)
       await refresh(monitor.id)
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Something went wrong'
@@ -121,8 +172,7 @@ export default function App() {
       await deleteMonitor(target.id)
       setDeleteTarget(null)
       push('success', 'Monitor deleted', target.name)
-      const keepId =
-        data?.selectedId === target.id ? null : (data?.selectedId ?? null)
+      const keepId = data?.selectedId === target.id ? null : (data?.selectedId ?? null)
       await refresh(keepId)
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Something went wrong'
@@ -132,109 +182,127 @@ export default function App() {
     }
   }
 
+  const handleLogout = async () => {
+    if (!onLogout) {
+      return
+    }
+    setLogoutBusy(true)
+    try {
+      await onLogout()
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Could not sign out'
+      push('error', 'Sign out failed', message)
+    } finally {
+      setLogoutBusy(false)
+    }
+  }
+
   return (
     <div className="min-h-screen md:flex md:flex-col">
       <ToastStack toasts={toasts} onDismiss={dismiss} />
       {demoMode ? <DemoModeBanner /> : null}
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-      <Sidebar
-        onRefresh={() => void refresh()}
-        onAddMonitor={openCreate}
-        refreshing={loading && data != null}
-        demoMode={demoMode}
-      />
+        <Sidebar
+          onRefresh={() => void refresh()}
+          onAddMonitor={openCreate}
+          refreshing={loading && data != null}
+          demoMode={demoMode}
+          username={username}
+          onLogout={onLogout ? () => void handleLogout() : undefined}
+          logoutBusy={logoutBusy}
+        />
 
-      <main id="overview" className="flex-1 px-4 py-6 md:px-8 md:py-8">
-        {loading && data == null ? <LoadingState /> : null}
+        <main id="overview" className="flex-1 px-4 py-6 md:px-8 md:py-8">
+          {loading && data == null ? <LoadingState /> : null}
 
-        {!loading && error ? (
-          <ErrorState message={error} onRetry={() => void refresh()} />
-        ) : null}
+          {!loading && error ? (
+            <ErrorState message={error} onRetry={() => void refresh()} />
+          ) : null}
 
-        {data && !error ? (
-          data.monitors.length === 0 ? (
-            <div className="mx-auto flex max-w-lg flex-col items-center gap-4 py-16">
-              <EmptyState
-                icon={RadioTower}
-                title="No monitors yet"
-                description="Add your first website to start tracking uptime and response time."
-              />
-              <button
-                type="button"
-                onClick={openCreate}
-                className="inline-flex items-center gap-2 rounded-xl bg-pulse px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-pulse/90"
-              >
-                <Plus className="size-4" />
-                Add monitor
-              </button>
-            </div>
-          ) : (
-            <div className="mx-auto flex max-w-6xl flex-col gap-6">
-              <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-pulse">
-                    Selected monitor
-                  </p>
-                  <h2 className="font-display text-2xl font-bold text-snow md:text-3xl">
-                    {selectedMonitor?.name ?? 'Monitor'}
-                  </h2>
-                  <p className="truncate text-sm text-mist">{selectedMonitor?.url}</p>
-                  {data.stats?.lastCheckedAt ? (
-                    <p className="font-mono text-xs text-mist/80">
-                      Last check {formatTimestamp(data.stats.lastCheckedAt)}
-                      {demoMode ? ' · sample' : ''}
+          {data && !error ? (
+            data.monitors.length === 0 ? (
+              <div className="mx-auto flex max-w-lg flex-col items-center gap-4 py-16">
+                <EmptyState
+                  icon={RadioTower}
+                  title="No monitors yet"
+                  description="Add your first website to start tracking uptime and response time."
+                />
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="inline-flex items-center gap-2 rounded-xl bg-pulse px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-pulse/90"
+                >
+                  <Plus className="size-4" />
+                  Add monitor
+                </button>
+              </div>
+            ) : (
+              <div className="mx-auto flex max-w-6xl flex-col gap-6">
+                <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-pulse">
+                      Selected monitor
                     </p>
-                  ) : null}
-                </div>
-                {selectedMonitor ? (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(selectedMonitor)}
-                      className="rounded-xl border border-line px-3 py-2 text-sm font-medium text-snow transition hover:bg-panel"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleToggleEnabled(selectedMonitor)}
-                      disabled={busyId === selectedMonitor.id}
-                      className="rounded-xl border border-line px-3 py-2 text-sm font-medium text-snow transition hover:bg-panel disabled:opacity-60"
-                    >
-                      {selectedMonitor.enabled ? 'Pause' : 'Resume'}
-                    </button>
+                    <h2 className="font-display text-2xl font-bold text-snow md:text-3xl">
+                      {selectedMonitor?.name ?? 'Monitor'}
+                    </h2>
+                    <p className="truncate text-sm text-mist">{selectedMonitor?.url}</p>
+                    {data.stats?.lastCheckedAt ? (
+                      <p className="font-mono text-xs text-mist/80">
+                        Last check {formatTimestamp(data.stats.lastCheckedAt)}
+                        {demoMode ? ' · sample' : ''}
+                      </p>
+                    ) : null}
                   </div>
-                ) : null}
-              </header>
+                  {selectedMonitor ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(selectedMonitor)}
+                        className="rounded-xl border border-line px-3 py-2 text-sm font-medium text-snow transition hover:bg-panel"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleToggleEnabled(selectedMonitor)}
+                        disabled={busyId === selectedMonitor.id}
+                        className="rounded-xl border border-line px-3 py-2 text-sm font-medium text-snow transition hover:bg-panel disabled:opacity-60"
+                      >
+                        {selectedMonitor.enabled ? 'Pause' : 'Resume'}
+                      </button>
+                    </div>
+                  ) : null}
+                </header>
 
-              <MonitorList
-                monitors={data.monitors}
-                selectedId={data.selectedId}
-                selectedStats={data.stats}
-                busyId={busyId}
-                onSelect={selectMonitor}
-                onEdit={openEdit}
-                onToggleEnabled={(m) => void handleToggleEnabled(m)}
-                onDelete={setDeleteTarget}
-              />
+                <MonitorList
+                  monitors={data.monitors}
+                  selectedId={data.selectedId}
+                  selectedStats={data.stats}
+                  busyId={busyId}
+                  onSelect={selectMonitor}
+                  onEdit={openEdit}
+                  onToggleEnabled={(m) => void handleToggleEnabled(m)}
+                  onDelete={setDeleteTarget}
+                />
 
-              <SummaryCards stats={data.stats} />
+                <SummaryCards stats={data.stats} />
 
-              <ResponseTimeChart checks={data.checks} />
+                <ResponseTimeChart checks={data.checks} />
 
-              <div className="grid gap-6 xl:grid-cols-5">
-                <div className="xl:col-span-3">
-                  <ChecksTable checks={data.checks} />
-                </div>
-                <div className="xl:col-span-2">
-                  <IncidentsSection incidents={data.incidents} />
+                <div className="grid gap-6 xl:grid-cols-5">
+                  <div className="xl:col-span-3">
+                    <ChecksTable checks={data.checks} />
+                  </div>
+                  <div className="xl:col-span-2">
+                    <IncidentsSection incidents={data.incidents} />
+                  </div>
                 </div>
               </div>
-            </div>
-          )
-        ) : null}
-      </main>
+            )
+          ) : null}
+        </main>
       </div>
 
       <MonitorFormModal

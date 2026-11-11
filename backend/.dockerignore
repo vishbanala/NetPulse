@@ -1,0 +1,13 @@
+target/
+.mvn/
+*.iml
+*.log
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md
+mvn-test-out.txt

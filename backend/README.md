@@ -25,6 +25,16 @@ See `.env.example`. Never commit real passwords or access keys.
 | `AWS_REGION` | e.g. `us-east-2` |
 | `NETPULSE_SQS_QUEUE_URL` | SQS queue URL |
 | `NETPULSE_SCHEDULER_ENABLED` | `true` to enable automatic scheduling (default `false`) |
+| `NETPULSE_SECURITY_MODE` | `UNAUTHENTICATED_LOCALHOST_ONLY`, `HEALTH_ONLY`, or `AUTHENTICATED` |
+| `NETPULSE_ADMIN_USERNAME` | Admin username (`AUTHENTICATED`) |
+| `NETPULSE_ADMIN_PASSWORD_HASH` | BCrypt password hash (`AUTHENTICATED`) |
+| `NETPULSE_CORS_ALLOWED_ORIGINS` | Allowed browser origin(s) (`AUTHENTICATED`) |
+| `NETPULSE_SESSION_COOKIE_SAME_SITE` | `Lax` or `None` |
+| `NETPULSE_SESSION_COOKIE_SECURE` | `true` on HTTPS |
+| `PORT` / `SERVER_PORT` | Listen port (`PORT` wins when set, e.g. Render) |
+| `SERVER_ADDRESS` | Bind address (local default `127.0.0.1`) |
+
+Render / auth notes: `docs/DEPLOY_RENDER.md`. Dockerfiles: `backend/Dockerfile`, `monitoring-engine/Dockerfile`.
 
 If your AWS profile uses `aws login` (browser session) instead of static keys, export temporary credentials into the process environment before `mvn spring-boot:run` (the Java SDK cannot read that cache directly).
 

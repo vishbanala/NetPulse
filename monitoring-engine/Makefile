@@ -1,5 +1,5 @@
 # NetPulse C monitoring engine + SQS worker
-# MSYS2 UCRT64 (Windows) and Linux (ECS later).
+# MSYS2 UCRT64 (Windows) and Linux (Render/Docker).
 
 CC       ?= gcc
 CFLAGS   ?= -std=c11 -Wall -Wextra -O2
@@ -7,12 +7,26 @@ CPPFLAGS += -Iinclude -Isrc
 LDFLAGS  ?=
 LDLIBS   ?= -lcurl -lpthread
 
+# libpq is required only for the worker target.
+LIBPQ_CFLAGS :=
+LIBPQ_LIBS   := -lpq
+
 ifeq ($(OS),Windows_NT)
   LDLIBS += -lws2_32 -lbcrypt
   EXEEXT := .exe
 else
+  # -std=c11 hides POSIX APIs (gmtime_r, strdup) unless a feature macro is set.
+  CPPFLAGS += -D_DEFAULT_SOURCE
   LDLIBS += -lcrypto
   EXEEXT :=
+  # Debian/Ubuntu install libpq-fe.h under /usr/include/postgresql (via pkg-config).
+  ifeq ($(shell pkg-config --exists libpq 2>/dev/null && echo yes),yes)
+    LIBPQ_CFLAGS := $(shell pkg-config --cflags libpq)
+    LIBPQ_LIBS   := $(shell pkg-config --libs libpq)
+  else
+    LIBPQ_CFLAGS := -I/usr/include/postgresql
+    LIBPQ_LIBS   := -lpq
+  endif
 endif
 
 BUILD_DIR := build
@@ -27,8 +41,7 @@ OBJ_WORKER := $(BUILD_DIR)/worker_main.o $(BUILD_DIR)/job_json.o \
               $(BUILD_DIR)/aws_creds.o $(BUILD_DIR)/aws_sigv4.o \
               $(BUILD_DIR)/sqs_client.o $(BUILD_DIR)/db_checks.o
 
-# libpq is required only for the worker target.
-WORKER_LIBS := $(LDLIBS) -lpq
+WORKER_LIBS := $(LDLIBS) $(LIBPQ_LIBS)
 
 .PHONY: all worker clean test run
 
@@ -61,7 +74,7 @@ $(BUILD_DIR)/sqs_client.o: src/sqs_client.c include/sqs_client.h include/aws_sig
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/sqs_client.c -o $@
 
 $(BUILD_DIR)/db_checks.o: src/db_checks.c include/db_checks.h src/monitor.h | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/db_checks.c -o $@
+	$(CC) $(CPPFLAGS) $(LIBPQ_CFLAGS) $(CFLAGS) -c src/db_checks.c -o $@
 
 $(BUILD_DIR)/worker_main.o: src/worker_main.c include/*.h src/monitor.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c src/worker_main.c -o $@

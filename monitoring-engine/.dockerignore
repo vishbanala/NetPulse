@@ -1,0 +1,14 @@
+build/
+*.o
+*.exe
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md
+.env
+.env.*
+tests/
+docs/
+*.log
+build.ps1

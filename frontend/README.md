@@ -29,6 +29,17 @@ $env:VITE_DEMO_MODE="true"
 npm run build
 ```
 
+## Authenticated production UI
+
+When `VITE_DEMO_MODE` is not `true`, the app:
+
+1. Restores the session via `GET /api/auth/me` (cookie)
+2. Shows a login screen when unauthenticated
+3. Sends `credentials: 'include'` and `X-XSRF-TOKEN` on mutating requests
+4. Uses **relative** `/api/...` paths (same-origin)
+
+Recommended hosting: serve this build from Spring Boot (see `docs/DEPLOY_RENDER.md`). Do not rely on Render static-site rewrites as a cookie proxy.
+
 ## Build
 
 ```powershell
