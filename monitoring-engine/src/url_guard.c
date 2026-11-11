@@ -30,6 +30,7 @@ static const char *const ALLOWED_URLS[] = {
     "https://httpbin.org/status/200",
     "https://httpbin.org/status/500",
     "https://httpbin.org/delay/5",
+    "https://httpbin.org/bytes/100000",
     NULL
 };
 

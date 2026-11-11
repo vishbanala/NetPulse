@@ -19,8 +19,8 @@ typedef struct {
 } NpMonitorResult;
 
 /*
- * Perform one HTTP(S) check.
- * timeout_ms applies to connect + total transfer (libcurl).
+ * Perform one HTTP(S) uptime check (HEAD, with bounded GET fallback).
+ * Does not download full response bodies. timeout_ms covers connect + transfer.
  * Returns process-style exit code matching health classification.
  */
 int np_monitor_check(const char *url, long timeout_ms, NpMonitorResult *out);

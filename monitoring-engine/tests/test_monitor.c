@@ -99,6 +99,34 @@ int main(void)
                result.http_status, result.response_time_ms);
     }
 
+    /*
+     * Regression: Google HTML exceeds the old 64KiB CURLOPT_MAXFILESIZE_LARGE
+     * Content-Length check and was falsely marked ERROR / DOWN.
+     */
+    {
+        int code = np_monitor_check("https://www.google.com", 15000, &result);
+        expect_true("google large healthy response is not filesize failure",
+                    code == (int)NP_STATUS_HEALTHY &&
+                        result.http_status >= 200 && result.http_status < 300 &&
+                        strstr(result.message, "Maximum") == NULL &&
+                        strstr(result.message, "filesize") == NULL,
+                    result.message);
+        printf("      (status=%ld time=%.0fms detail=%s)\n",
+               result.http_status, result.response_time_ms, result.message);
+    }
+
+    /* Deterministic >64KiB body (httpbin); must stay HEALTHY with bounded GET. */
+    {
+        int code = np_monitor_check("https://httpbin.org/bytes/100000", 20000, &result);
+        expect_true("100KiB healthy body classified HEALTHY",
+                    code == (int)NP_STATUS_HEALTHY &&
+                        result.http_status >= 200 && result.http_status < 300 &&
+                        strstr(result.message, "Maximum") == NULL,
+                    result.message);
+        printf("      (status=%ld time=%.0fms detail=%s)\n",
+               result.http_status, result.response_time_ms, result.message);
+    }
+
     /* --- HTTP error (still a completed HTTP transaction) --- */
     {
         int code = np_monitor_check("https://httpbin.org/status/500", 15000, &result);
@@ -109,7 +137,7 @@ int main(void)
                result.http_status, result.response_time_ms);
     }
 
-    /* --- Timeout --- */
+    /* --- Timeout / network-style failure --- */
     {
         int code = np_monitor_check("https://httpbin.org/delay/5", 1000, &result);
         expect_true("timeout on delayed endpoint",

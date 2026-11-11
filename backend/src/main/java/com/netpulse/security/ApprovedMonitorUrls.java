@@ -20,7 +20,8 @@ public final class ApprovedMonitorUrls {
             "https://httpbin.org/get",
             "https://httpbin.org/status/200",
             "https://httpbin.org/status/500",
-            "https://httpbin.org/delay/5"
+            "https://httpbin.org/delay/5",
+            "https://httpbin.org/bytes/100000"
     );
 
     private ApprovedMonitorUrls() {

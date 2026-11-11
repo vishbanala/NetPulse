@@ -19,6 +19,7 @@ class ApprovedMonitorUrlsTest {
         assertThat(ApprovedMonitorUrls.isApproved("https://google.com")).isTrue();
         assertThat(ApprovedMonitorUrls.isApproved("https://example.com")).isTrue();
         assertThat(ApprovedMonitorUrls.isApproved("https://httpbin.org/get")).isTrue();
+        assertThat(ApprovedMonitorUrls.isApproved("https://httpbin.org/bytes/100000")).isTrue();
     }
 
     @Test
