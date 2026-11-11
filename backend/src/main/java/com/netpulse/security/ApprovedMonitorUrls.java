@@ -4,14 +4,19 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Step 3/5 temporary allowlist — same public test URLs as the C monitoring engine.
- * Replace with ownership-backed authorization before accepting untrusted targets.
+ * Explicit public-URL allowlist — kept in sync with {@code monitoring-engine/src/url_guard.c}.
+ * SSRF defenses (private/link-local/metadata hosts, credentials, scheme checks) remain in the
+ * C worker independently of this list. Expand only with known-safe public targets.
  */
 public final class ApprovedMonitorUrls {
 
     private static final Set<String> ALLOWED = Set.of(
             "https://example.com",
             "https://example.com/",
+            "https://www.google.com",
+            "https://www.google.com/",
+            "https://google.com",
+            "https://google.com/",
             "https://httpbin.org/get",
             "https://httpbin.org/status/200",
             "https://httpbin.org/status/500",

@@ -17,10 +17,15 @@
 #include <sys/types.h>
 #endif
 
-/* Explicit Step-3 allowlist — expand later via config / ownership checks. */
+/* Explicit public-URL allowlist — keep in sync with ApprovedMonitorUrls.java.
+ * Private/metadata/credential SSRF checks below still apply to every entry. */
 static const char *const ALLOWED_URLS[] = {
     "https://example.com",
     "https://example.com/",
+    "https://www.google.com",
+    "https://www.google.com/",
+    "https://google.com",
+    "https://google.com/",
     "https://httpbin.org/get",
     "https://httpbin.org/status/200",
     "https://httpbin.org/status/500",

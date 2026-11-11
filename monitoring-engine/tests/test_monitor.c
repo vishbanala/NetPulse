@@ -79,6 +79,16 @@ int main(void)
                 np_url_is_allowed("https://example.com", err, sizeof(err)) == 0,
                 err);
 
+    /* Regression: Google was abandoned by the Java scheduler while still "Waiting" in UI. */
+    expect_true("allow www.google.com on allowlist",
+                np_url_is_allowed("https://www.google.com", err, sizeof(err)) == 0,
+                err);
+
+    /* SSRF still blocks even if someone later mistakenly allowlists a private host pattern. */
+    expect_true("reject credentials on google host",
+                np_url_is_allowed("https://user:pass@www.google.com/", err, sizeof(err)) != 0,
+                err);
+
     /* --- Successful HTTP request --- */
     {
         int code = np_monitor_check("https://example.com", 10000, &result);

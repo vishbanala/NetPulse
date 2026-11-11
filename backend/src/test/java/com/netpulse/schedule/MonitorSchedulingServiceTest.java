@@ -257,4 +257,30 @@ class MonitorSchedulingServiceTest {
         verify(scheduleRepository).abandonPending(monitorId, jobId, NOW);
         verify(scheduleRepository, never()).markPublished(any(), any(), any());
     }
+
+    @Test
+    void runOnce_publishesGoogleAllowlistedUrl_regressionWaitingMonitor() {
+        // Production: e6c1c8c5-0d7e-4910-88e6-8bb6894e7434 stayed Waiting because
+        // www.google.com was claimed then abandoned as unapproved.
+        UUID monitorId = UUID.fromString("e6c1c8c5-0d7e-4910-88e6-8bb6894e7434");
+        UUID jobId = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        DueMonitorJob due = new DueMonitorJob(
+                monitorId, jobId, "https://www.google.com", NOW, 60);
+
+        when(jobPublisher.isConfigured()).thenReturn(true);
+        when(scheduleRepository.ensureSchedules(NOW)).thenReturn(0);
+        when(scheduleRepository.claimDueMonitors(NOW, 50)).thenReturn(List.of(due));
+        when(scheduleRepository.leasePendingPublishes(eq(NOW), any(), eq(50))).thenReturn(List.of(due));
+        when(jobPublisher.publish(any())).thenReturn("sqs-google");
+        when(scheduleRepository.markPublished(monitorId, jobId, NOW)).thenReturn(true);
+
+        MonitorSchedulingService.TickResult result = service.runOnce();
+
+        assertThat(result.published()).isEqualTo(1);
+        assertThat(result.skippedUnapproved()).isZero();
+        verify(jobPublisher).publish(argThat(job ->
+                monitorId.equals(job.getMonitorId())
+                        && "https://www.google.com".equals(job.getUrl())));
+        verify(scheduleRepository, never()).abandonPending(any(), any(), any());
+    }
 }
