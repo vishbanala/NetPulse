@@ -6,6 +6,7 @@ import java.util.UUID;
 public class Monitor {
 
     private UUID id;
+    private UUID userId;
     private String name;
     private String url;
     private int intervalSeconds;
@@ -18,6 +19,14 @@ public class Monitor {
 
     public void setId(UUID id) {
         this.id = id;
+    }
+
+    public UUID getUserId() {
+        return userId;
+    }
+
+    public void setUserId(UUID userId) {
+        this.userId = userId;
     }
 
     public String getName() {

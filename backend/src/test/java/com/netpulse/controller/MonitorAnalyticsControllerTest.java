@@ -3,9 +3,12 @@ package com.netpulse.controller;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -17,26 +20,33 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.netpulse.dto.MonitorStatsResponse;
 import com.netpulse.exception.ApiExceptionHandler;
 import com.netpulse.model.Incident;
 import com.netpulse.model.MonitoringCheck;
+import com.netpulse.model.UserAccount;
 import com.netpulse.repository.IncidentRepository;
-import com.netpulse.repository.MonitorRepository;
 import com.netpulse.repository.MonitoringCheckRepository;
+import com.netpulse.security.AuthRateLimiter;
+import com.netpulse.security.NetPulseUserPrincipal;
+import com.netpulse.security.PublicUrlValidator;
+import com.netpulse.service.MonitorService;
 import com.netpulse.sqs.MonitoringJobPublisher;
 
 @WebMvcTest(controllers = MonitorController.class)
-@AutoConfigureMockMvc(addFilters = false)
 @Import(ApiExceptionHandler.class)
 class MonitorAnalyticsControllerTest {
 
+    private static final UUID USER_ID = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     private static final UUID MONITOR_ID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     private static final UUID MISSING_ID = UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff");
 
@@ -44,19 +54,26 @@ class MonitorAnalyticsControllerTest {
     private MockMvc mockMvc;
 
     @MockitoBean
-    private MonitorRepository monitorRepository;
+    private MonitorService monitorService;
+    @MockitoBean
+    private com.netpulse.repository.UserRepository userRepository;
     @MockitoBean
     private MonitoringCheckRepository monitoringCheckRepository;
     @MockitoBean
     private IncidentRepository incidentRepository;
     @MockitoBean
     private MonitoringJobPublisher monitoringJobPublisher;
+    @MockitoBean
+    private PublicUrlValidator publicUrlValidator;
+    @MockitoBean
+    private AuthRateLimiter authRateLimiter;
 
     @Test
     void listChecks_returns404WhenMonitorMissing() throws Exception {
-        when(monitorRepository.existsById(MISSING_ID)).thenReturn(false);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Monitor not found"))
+                .when(monitorService).requireOwnedExists(MISSING_ID, USER_ID);
 
-        mockMvc.perform(get("/api/monitors/{id}/checks", MISSING_ID))
+        mockMvc.perform(get("/api/monitors/{id}/checks", MISSING_ID).with(ownerAuth()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("Monitor not found"));
 
@@ -65,10 +82,10 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void listChecks_returnsNewestFirstWithDefaultLimit() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
         when(monitoringCheckRepository.findByMonitorId(MONITOR_ID, 50)).thenReturn(List.of(sampleCheck()));
 
-        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID))
+        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).with(ownerAuth()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].httpStatus").value(200))
                 .andExpect(jsonPath("$[0].responseTimeMs").value(12.5))
@@ -79,10 +96,10 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void listChecks_honorsConfiguredLimit() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
         when(monitoringCheckRepository.findByMonitorId(MONITOR_ID, 10)).thenReturn(List.of());
 
-        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "10"))
+        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "10").with(ownerAuth()))
                 .andExpect(status().isOk());
 
         verify(monitoringCheckRepository).findByMonitorId(eq(MONITOR_ID), eq(10));
@@ -90,33 +107,32 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void listChecks_rejectsLimitAboveMaximum() throws Exception {
-        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "101"))
+        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "101").with(ownerAuth()))
                 .andExpect(status().isBadRequest());
 
-        verify(monitorRepository, never()).existsById(any());
         verify(monitoringCheckRepository, never()).findByMonitorId(any(), any(Integer.class));
     }
 
     @Test
     void listChecks_rejectsLimitBelowMinimum() throws Exception {
-        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "0"))
+        mockMvc.perform(get("/api/monitors/{id}/checks", MONITOR_ID).param("limit", "0").with(ownerAuth()))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void listChecks_rejectsInvalidUuid() throws Exception {
-        mockMvc.perform(get("/api/monitors/{id}/checks", "not-a-uuid"))
+        mockMvc.perform(get("/api/monitors/{id}/checks", "not-a-uuid").with(ownerAuth()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Invalid monitor id — expected a UUID"));
     }
 
     @Test
     void getStats_returnsEmptyDefaultsWhenNoChecks() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
         when(monitoringCheckRepository.aggregateStats(MONITOR_ID)).thenReturn(
                 new MonitorStatsResponse(MONITOR_ID, 0, 0, 0, null, null, null, null, null));
 
-        mockMvc.perform(get("/api/monitors/{id}/stats", MONITOR_ID))
+        mockMvc.perform(get("/api/monitors/{id}/stats", MONITOR_ID).with(ownerAuth()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.monitorId").value(MONITOR_ID.toString()))
                 .andExpect(jsonPath("$.totalChecks").value(0))
@@ -131,12 +147,12 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void getStats_returnsAggregates() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
         OffsetDateTime last = OffsetDateTime.of(2026, 11, 10, 22, 0, 0, 0, ZoneOffset.UTC);
         when(monitoringCheckRepository.aggregateStats(MONITOR_ID)).thenReturn(
                 new MonitorStatsResponse(MONITOR_ID, 10, 9, 1, 90.0, 42.5, last, true, 200));
 
-        mockMvc.perform(get("/api/monitors/{id}/stats", MONITOR_ID))
+        mockMvc.perform(get("/api/monitors/{id}/stats", MONITOR_ID).with(ownerAuth()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalChecks").value(10))
                 .andExpect(jsonPath("$.successfulChecks").value(9))
@@ -149,19 +165,20 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void getStats_returns404WhenMonitorMissing() throws Exception {
-        when(monitorRepository.existsById(MISSING_ID)).thenReturn(false);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Monitor not found"))
+                .when(monitorService).requireOwnedExists(MISSING_ID, USER_ID);
 
-        mockMvc.perform(get("/api/monitors/{id}/stats", MISSING_ID))
+        mockMvc.perform(get("/api/monitors/{id}/stats", MISSING_ID).with(ownerAuth()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("Monitor not found"));
     }
 
     @Test
     void listIncidents_returnsEmptyListWhenNone() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
         when(incidentRepository.findByMonitorId(MONITOR_ID)).thenReturn(List.of());
 
-        mockMvc.perform(get("/api/monitors/{id}/incidents", MONITOR_ID))
+        mockMvc.perform(get("/api/monitors/{id}/incidents", MONITOR_ID).with(ownerAuth()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$").isEmpty());
@@ -169,7 +186,7 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void listIncidents_includesDerivedStatus() throws Exception {
-        when(monitorRepository.existsById(MONITOR_ID)).thenReturn(true);
+        doNothing().when(monitorService).requireOwnedExists(MONITOR_ID, USER_ID);
 
         Incident open = new Incident();
         open.setId(UUID.fromString("11111111-1111-1111-1111-111111111111"));
@@ -187,7 +204,7 @@ class MonitorAnalyticsControllerTest {
 
         when(incidentRepository.findByMonitorId(MONITOR_ID)).thenReturn(List.of(open, resolved));
 
-        mockMvc.perform(get("/api/monitors/{id}/incidents", MONITOR_ID))
+        mockMvc.perform(get("/api/monitors/{id}/incidents", MONITOR_ID).with(ownerAuth()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].status").value("open"))
                 .andExpect(jsonPath("$[0].reason").value("5xx"))
@@ -197,10 +214,23 @@ class MonitorAnalyticsControllerTest {
 
     @Test
     void listIncidents_returns404WhenMonitorMissing() throws Exception {
-        when(monitorRepository.existsById(MISSING_ID)).thenReturn(false);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Monitor not found"))
+                .when(monitorService).requireOwnedExists(MISSING_ID, USER_ID);
 
-        mockMvc.perform(get("/api/monitors/{id}/incidents", MISSING_ID))
+        mockMvc.perform(get("/api/monitors/{id}/incidents", MISSING_ID).with(ownerAuth()))
                 .andExpect(status().isNotFound());
+    }
+
+    private static RequestPostProcessor ownerAuth() {
+        UserAccount account = new UserAccount();
+        account.setId(USER_ID);
+        account.setEmail("owner@example.com");
+        account.setPasswordHash("$2a$10$dXJ3SW6G7P50lGmMkkmwe.20cQQubK3.HZWzG3YB1tlRy.fqvM/BG");
+        account.setRole(UserAccount.ROLE_USER);
+        account.setEmailVerifiedAt(OffsetDateTime.now(ZoneOffset.UTC));
+        NetPulseUserPrincipal principal = new NetPulseUserPrincipal(account);
+        return authentication(new UsernamePasswordAuthenticationToken(
+                principal, null, principal.getAuthorities()));
     }
 
     private static MonitoringCheck sampleCheck() {

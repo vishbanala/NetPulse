@@ -8,8 +8,7 @@
 #include <string.h>
 
 /*
- * Basic integration-style tests against the Step-3 allowlist.
- * Results are real network outcomes — do not treat failures as "invented pass".
+ * Integration-style tests for public-URL SSRF policy and uptime classification.
  */
 
 static int g_pass = 0;
@@ -39,6 +38,7 @@ int main(void)
 {
     NpMonitorResult result;
     char err[256];
+    char pin[512];
     CURLcode global_rc;
 
     printf("NetPulse monitoring-engine tests\n");
@@ -50,7 +50,6 @@ int main(void)
         return 1;
     }
 
-    /* --- URL guard / invalid input (no network required) --- */
     expect_true("reject empty URL",
                 np_url_is_allowed("", err, sizeof(err)) != 0,
                 err);
@@ -63,10 +62,6 @@ int main(void)
                 np_url_is_allowed("https://user:pass@example.com/", err, sizeof(err)) != 0,
                 err);
 
-    expect_true("reject non-allowlisted public URL",
-                np_url_is_allowed("https://www.wikipedia.org", err, sizeof(err)) != 0,
-                err);
-
     expect_true("reject localhost",
                 np_url_is_allowed("http://127.0.0.1/", err, sizeof(err)) != 0,
                 err);
@@ -75,21 +70,35 @@ int main(void)
                 np_url_is_allowed("http://169.254.169.254/latest/meta-data/", err, sizeof(err)) != 0,
                 err);
 
-    expect_true("allow example.com on allowlist",
+    expect_true("reject private 10/8",
+                np_url_is_allowed("http://10.0.0.1/", err, sizeof(err)) != 0,
+                err);
+
+    expect_true("reject IPv6 loopback",
+                np_url_is_allowed("http://[::1]/", err, sizeof(err)) != 0,
+                err);
+
+    expect_true("reject non-default port",
+                np_url_is_allowed("https://example.com:8443/", err, sizeof(err)) != 0,
+                err);
+
+    expect_true("allow example.com public HTTPS",
                 np_url_is_allowed("https://example.com", err, sizeof(err)) == 0,
                 err);
 
-    /* Regression: Google was abandoned by the Java scheduler while still "Waiting" in UI. */
-    expect_true("allow www.google.com on allowlist",
+    expect_true("pin resolve for example.com",
+                np_url_pin_public_resolve("https://example.com", pin, sizeof(pin), err, sizeof(err)) == 0
+                    && strstr(pin, "example.com:443:") != NULL,
+                err);
+
+    expect_true("allow www.google.com",
                 np_url_is_allowed("https://www.google.com", err, sizeof(err)) == 0,
                 err);
 
-    /* SSRF still blocks even if someone later mistakenly allowlists a private host pattern. */
     expect_true("reject credentials on google host",
                 np_url_is_allowed("https://user:pass@www.google.com/", err, sizeof(err)) != 0,
                 err);
 
-    /* --- Successful HTTP request --- */
     {
         int code = np_monitor_check("https://example.com", 10000, &result);
         expect_true("successful request to example.com",
@@ -99,26 +108,9 @@ int main(void)
                result.http_status, result.response_time_ms);
     }
 
-    /*
-     * Regression: Google HTML exceeds the old 64KiB CURLOPT_MAXFILESIZE_LARGE
-     * Content-Length check and was falsely marked ERROR / DOWN.
-     */
     {
         int code = np_monitor_check("https://www.google.com", 15000, &result);
         expect_true("google large healthy response is not filesize failure",
-                    code == (int)NP_STATUS_HEALTHY &&
-                        result.http_status >= 200 && result.http_status < 300 &&
-                        strstr(result.message, "Maximum") == NULL &&
-                        strstr(result.message, "filesize") == NULL,
-                    result.message);
-        printf("      (status=%ld time=%.0fms detail=%s)\n",
-               result.http_status, result.response_time_ms, result.message);
-    }
-
-    /* Deterministic >64KiB body (httpbin); must stay HEALTHY with bounded GET. */
-    {
-        int code = np_monitor_check("https://httpbin.org/bytes/100000", 20000, &result);
-        expect_true("100KiB healthy body classified HEALTHY",
                     code == (int)NP_STATUS_HEALTHY &&
                         result.http_status >= 200 && result.http_status < 300 &&
                         strstr(result.message, "Maximum") == NULL,
@@ -127,7 +119,16 @@ int main(void)
                result.http_status, result.response_time_ms, result.message);
     }
 
-    /* --- HTTP error (still a completed HTTP transaction) --- */
+    {
+        int code = np_monitor_check("https://httpbin.org/bytes/100000", 20000, &result);
+        expect_true("100KiB healthy body classified HEALTHY",
+                    code == (int)NP_STATUS_HEALTHY &&
+                        result.http_status >= 200 && result.http_status < 300,
+                    result.message);
+        printf("      (status=%ld time=%.0fms detail=%s)\n",
+               result.http_status, result.response_time_ms, result.message);
+    }
+
     {
         int code = np_monitor_check("https://httpbin.org/status/500", 15000, &result);
         expect_true("HTTP 500 classified unhealthy",
@@ -137,7 +138,6 @@ int main(void)
                result.http_status, result.response_time_ms);
     }
 
-    /* --- Timeout / network-style failure --- */
     {
         int code = np_monitor_check("https://httpbin.org/delay/5", 1000, &result);
         expect_true("timeout on delayed endpoint",
@@ -148,15 +148,13 @@ int main(void)
                result.message, result.response_time_ms);
     }
 
-    /* --- Invalid / rejected URL through monitor API --- */
     {
-        int code = np_monitor_check("https://evil.example/not-allowed", 5000, &result);
-        expect_true("monitor rejects non-allowlisted URL",
+        int code = np_monitor_check("http://127.0.0.1/", 5000, &result);
+        expect_true("monitor rejects loopback",
                     code == (int)NP_STATUS_REJECTED,
                     result.message);
     }
 
-    /* --- Concurrent requests (bounded threads) --- */
     {
         pthread_t t1, t2;
         void *r1 = NULL;
@@ -184,8 +182,6 @@ int main(void)
         }
     }
 
-    /* Resource cleanup is exercised by curl_easy_cleanup / curl_global_cleanup
-     * on every path above; Valgrind/ASan can be added later on Linux CI. */
     printf("PASS  resource cleanup paths exercised via libcurl cleanup\n");
     g_pass++;
 

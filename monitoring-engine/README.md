@@ -39,7 +39,7 @@ Set the same `NETPULSE_DB_*`, `AWS_REGION`, and `NETPULSE_SQS_QUEUE_URL` variabl
 
 ## Safety
 
-- URL allowlist / private-network guards (SSRF protection)
+- Public-URL SSRF guards with DNS resolve-and-pin (`CURLOPT_RESOLVE`)
 - Deletes SQS messages only after a durable DB insert (or idempotent duplicate)
 - Local development process — not a public endpoint
 

@@ -65,7 +65,7 @@ Set in the Render dashboard (values never in git):
 - `NETPULSE_DB_URL`
 - `NETPULSE_DB_USER`
 - `NETPULSE_DB_PASSWORD`
-- `NETPULSE_ADMIN_USERNAME`
+- `NETPULSE_ADMIN_EMAIL` (preferred bootstrap admin; `NETPULSE_ADMIN_USERNAME` accepted as legacy alias)
 - `NETPULSE_ADMIN_PASSWORD_HASH` (BCrypt hash only)
 - `AWS_REGION`
 - `NETPULSE_SQS_QUEUE_URL`
@@ -86,6 +86,8 @@ Optional:
 - `NETPULSE_LOGIN_MAX_ATTEMPTS`
 - `NETPULSE_LOGIN_WINDOW_SECONDS`
 - `NETPULSE_CORS_ALLOWED_ORIGINS` (omit for same-origin SPA)
+- `NETPULSE_MAX_ENABLED_MONITORS_GLOBAL` (optional site-wide enabled-monitor ceiling; default 40)
+- `NETPULSE_SMTP_*` + `NETPULSE_PUBLIC_BASE_URL` (optional; enables forgot/reset password only)
 
 Missing DB/admin credentials in `AUTHENTICATED` / `HEALTH_ONLY` modes cause **startup failure** (fail closed).
 

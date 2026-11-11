@@ -12,7 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.netpulse.repository.MonitorScheduleRepository;
-import com.netpulse.security.ApprovedMonitorUrls;
+import com.netpulse.security.PublicUrlValidator;
 import com.netpulse.sqs.MonitoringJob;
 import com.netpulse.sqs.MonitoringJobPublisher;
 
@@ -32,17 +32,20 @@ public class MonitorSchedulingService {
 
     private final MonitorScheduleRepository scheduleRepository;
     private final MonitoringJobPublisher jobPublisher;
+    private final PublicUrlValidator publicUrlValidator;
     private final Clock clock;
     private final int batchSize;
     private final Duration publishLease;
 
     public MonitorSchedulingService(MonitorScheduleRepository scheduleRepository,
                                     MonitoringJobPublisher jobPublisher,
+                                    PublicUrlValidator publicUrlValidator,
                                     Clock clock,
                                     @Value("${netpulse.scheduler.batch-size:50}") int batchSize,
                                     @Value("${netpulse.scheduler.publish-lease-seconds:60}") long publishLeaseSeconds) {
         this.scheduleRepository = scheduleRepository;
         this.jobPublisher = jobPublisher;
+        this.publicUrlValidator = publicUrlValidator;
         this.clock = clock;
         this.batchSize = Math.max(1, batchSize);
         this.publishLease = Duration.ofSeconds(Math.max(5, publishLeaseSeconds));
@@ -69,10 +72,11 @@ public class MonitorSchedulingService {
         List<String> errors = new ArrayList<>();
 
         for (DueMonitorJob due : leased) {
-            if (!ApprovedMonitorUrls.isApproved(due.getUrl())) {
+            String urlReject = publicUrlValidator.validate(due.getUrl());
+            if (urlReject != null) {
                 scheduleRepository.abandonPending(due.getMonitorId(), due.getJobId(), clock.instant());
                 skippedUnapproved++;
-                log.warn("Abandoned pending job with unapproved URL monitorId={} jobId={}",
+                log.warn("Abandoned pending job with unsafe URL monitorId={} jobId={}",
                         due.getMonitorId(), due.getJobId());
                 continue;
             }

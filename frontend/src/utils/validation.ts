@@ -47,8 +47,8 @@ export function validateMonitorForm(values: MonitorFormValues): MonitorFormError
     errors.intervalSeconds = 'Interval is required'
   } else if (!Number.isInteger(interval)) {
     errors.intervalSeconds = 'Interval must be a whole number of seconds'
-  } else if (interval < 10 || interval > 86400) {
-    errors.intervalSeconds = 'Interval must be between 10 and 86400 seconds'
+  } else if (interval < 300 || interval > 86400) {
+    errors.intervalSeconds = 'Interval must be between 300 and 86400 seconds'
   }
 
   return errors

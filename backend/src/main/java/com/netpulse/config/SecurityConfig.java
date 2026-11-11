@@ -15,7 +15,6 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -27,8 +26,10 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import com.netpulse.repository.UserRepository;
 import com.netpulse.security.AdminAuthProperties;
 import com.netpulse.security.CorsProperties;
+import com.netpulse.security.NetPulseUserPrincipal;
 import com.netpulse.security.SecurityModes;
 import com.netpulse.security.SessionCookieProperties;
 import com.netpulse.security.SpaCsrfTokenRequestHandler;
@@ -48,16 +49,19 @@ public class SecurityConfig {
     private final AdminAuthProperties adminAuthProperties;
     private final CorsProperties corsProperties;
     private final SessionCookieProperties sessionCookieProperties;
+    private final UserRepository userRepository;
 
     public SecurityConfig(Environment environment,
                           AdminAuthProperties adminAuthProperties,
                           CorsProperties corsProperties,
-                          SessionCookieProperties sessionCookieProperties) {
+                          SessionCookieProperties sessionCookieProperties,
+                          UserRepository userRepository) {
         this.securityMode = SecurityModes.normalize(
                 environment.getProperty("netpulse.security.mode", SecurityModes.UNAUTHENTICATED_LOCALHOST_ONLY));
         this.adminAuthProperties = adminAuthProperties;
         this.corsProperties = corsProperties;
         this.sessionCookieProperties = sessionCookieProperties;
+        this.userRepository = userRepository;
     }
 
     @PostConstruct
@@ -65,21 +69,35 @@ public class SecurityConfig {
         if (!SecurityModes.isAuthenticated(securityMode)) {
             return;
         }
-        if (adminAuthProperties.getUsername().isEmpty()) {
+        if (adminAuthProperties.resolvedEmail().isEmpty()) {
             throw new IllegalStateException(
-                    "NETPULSE_ADMIN_USERNAME is required when NETPULSE_SECURITY_MODE=AUTHENTICATED");
+                    "NETPULSE_ADMIN_EMAIL (or NETPULSE_ADMIN_USERNAME) is required when NETPULSE_SECURITY_MODE=AUTHENTICATED");
         }
         if (adminAuthProperties.getPasswordHash().isEmpty()
                 || !adminAuthProperties.getPasswordHash().startsWith("$2")) {
             throw new IllegalStateException(
                     "NETPULSE_ADMIN_PASSWORD_HASH must be a BCrypt hash when NETPULSE_SECURITY_MODE=AUTHENTICATED");
         }
-        // CORS origins are optional for same-origin SPA hosting; required for cross-origin UIs.
         if ("None".equalsIgnoreCase(sessionCookieProperties.getCookieSameSite())
                 && !sessionCookieProperties.isCookieSecure()) {
             throw new IllegalStateException(
                     "NETPULSE_SESSION_COOKIE_SECURE=true is required when SameSite=None");
         }
+    }
+
+    @Bean
+    LocalDevPrincipalFilter localDevPrincipalFilter(Environment environment, UserRepository users) {
+        return new LocalDevPrincipalFilter(environment, users);
+    }
+
+    @Bean
+    org.springframework.boot.web.servlet.FilterRegistrationBean<LocalDevPrincipalFilter> localDevPrincipalFilterRegistration(
+            LocalDevPrincipalFilter filter) {
+        org.springframework.boot.web.servlet.FilterRegistrationBean<LocalDevPrincipalFilter> registration =
+                new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        // Only run inside the SecurityFilterChain, not as a global servlet filter.
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
@@ -93,13 +111,9 @@ public class SecurityConfig {
             if (!SecurityModes.isAuthenticated(securityMode)) {
                 throw new UsernameNotFoundException("Authentication is disabled in this security mode");
             }
-            if (!adminAuthProperties.getUsername().equals(username)) {
-                throw new UsernameNotFoundException("User not found");
-            }
-            return User.withUsername(adminAuthProperties.getUsername())
-                    .password(adminAuthProperties.getPasswordHash())
-                    .roles("ADMIN")
-                    .build();
+            return userRepository.findByEmailNormalized(username)
+                    .map(NetPulseUserPrincipal::new)
+                    .orElseThrow(() -> new UsernameNotFoundException("User not found"));
         };
     }
 
@@ -112,7 +126,8 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                            LocalDevPrincipalFilter localDevPrincipalFilter) throws Exception {
         http.headers(headers -> headers.frameOptions(frame -> frame.deny()));
 
         if (SecurityModes.isLocalUnauthenticated(securityMode)) {
@@ -120,6 +135,8 @@ public class SecurityConfig {
             http.cors(cors -> cors.disable());
             http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
             http.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED));
+            http.addFilterAfter(localDevPrincipalFilter,
+                    org.springframework.security.web.context.SecurityContextHolderFilter.class);
             return http.build();
         }
 
@@ -152,11 +169,16 @@ public class SecurityConfig {
         http.authorizeHttpRequests(auth -> auth
                 .requestMatchers("/health", "/api/health", "/actuator/health", "/actuator/health/**")
                 .permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/auth/csrf").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
-                .requestMatchers("/api/auth/logout", "/api/auth/me").authenticated()
+                .requestMatchers(HttpMethod.GET, "/api/auth/csrf", "/api/auth/features").permitAll()
+                .requestMatchers(HttpMethod.POST,
+                        "/api/auth/login",
+                        "/api/auth/register",
+                        "/api/auth/forgot-password",
+                        "/api/auth/reset-password")
+                .permitAll()
+                .requestMatchers("/api/auth/logout", "/api/auth/me")
+                .authenticated()
                 .requestMatchers("/api/monitors", "/api/monitors/**").authenticated()
-                // Same-origin SPA assets + client routes (API remains protected above).
                 .requestMatchers(HttpMethod.GET,
                         "/",
                         "/index.html",

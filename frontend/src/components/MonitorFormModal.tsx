@@ -26,7 +26,7 @@ function fromMonitor(monitor: Monitor | null | undefined): MonitorFormValues {
     return {
       name: '',
       url: 'https://',
-      intervalSeconds: '60',
+      intervalSeconds: '300',
       enabled: true,
     }
   }
@@ -155,7 +155,7 @@ export function MonitorFormModal({
             label="Check interval (seconds)"
             error={errors.intervalSeconds}
             htmlFor="monitor-interval"
-            hint="Between 10 and 86400 seconds"
+            hint="Between 300 and 86400 seconds (5 minutes minimum)"
           >
             <input
               id="monitor-interval"

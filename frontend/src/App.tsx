@@ -44,10 +44,19 @@ export default function App() {
         <ToastStack toasts={toasts} onDismiss={dismiss} />
         <LoginScreen
           bootstrapError={auth.error}
-          onLogin={async (username, password) => {
-            await auth.login(username, password)
-            push('success', 'Signed in', username)
+          passwordResetEnabled={auth.features.passwordResetEnabled}
+          onLogin={async (email, password) => {
+            await auth.login(email, password)
+            push('success', 'Signed in', email)
           }}
+          onRegister={async (email, password) => auth.register(email, password)}
+          onForgotPassword={
+            auth.features.passwordResetEnabled
+              ? async (email) => {
+                  await auth.forgotPassword(email)
+                }
+              : undefined
+          }
         />
       </div>
     )
@@ -56,7 +65,7 @@ export default function App() {
   return (
     <AuthenticatedShell
       demoMode={auth.demoMode}
-      username={auth.user?.username ?? null}
+      email={auth.user?.email ?? auth.user?.username ?? null}
       onLogout={
         auth.demoMode
           ? undefined
@@ -74,14 +83,14 @@ export default function App() {
 
 interface ShellProps {
   demoMode: boolean
-  username: string | null
+  email: string | null
   onLogout?: () => Promise<void>
   toasts: ReturnType<typeof useToasts>['toasts']
   push: ReturnType<typeof useToasts>['push']
   dismiss: ReturnType<typeof useToasts>['dismiss']
 }
 
-function AuthenticatedShell({ demoMode, username, onLogout, toasts, push, dismiss }: ShellProps) {
+function AuthenticatedShell({ demoMode, email, onLogout, toasts, push, dismiss }: ShellProps) {
   const { data, loading, error, selectMonitor, refresh } = useMonitorDashboard()
 
   const [formOpen, setFormOpen] = useState(false)
@@ -208,7 +217,7 @@ function AuthenticatedShell({ demoMode, username, onLogout, toasts, push, dismis
           onAddMonitor={openCreate}
           refreshing={loading && data != null}
           demoMode={demoMode}
-          username={username}
+          username={email}
           onLogout={onLogout ? () => void handleLogout() : undefined}
           logoutBusy={logoutBusy}
         />

@@ -6,9 +6,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AdminAuthProperties {
 
     /**
-     * Single admin username. Required when security mode is AUTHENTICATED.
+     * Legacy admin login name. Prefer {@link #email}; if email is empty, username is treated as email.
      */
     private String username = "";
+
+    /**
+     * Bootstrap admin email (normalized). Required for AUTHENTICATED multi-user mode.
+     */
+    private String email = "";
 
     /**
      * BCrypt hash of the admin password (e.g. {@code $2a$10$...}). Never a plaintext password.
@@ -21,6 +26,28 @@ public class AdminAuthProperties {
 
     public void setUsername(String username) {
         this.username = username == null ? "" : username.trim();
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email == null ? "" : email.trim();
+    }
+
+    /** Resolved bootstrap email: NETPULSE_ADMIN_EMAIL, else username if it looks like email, else empty. */
+    public String resolvedEmail() {
+        if (!email.isEmpty()) {
+            return email.toLowerCase();
+        }
+        if (username.contains("@")) {
+            return username.toLowerCase();
+        }
+        if (!username.isEmpty()) {
+            return username.toLowerCase() + "@localhost";
+        }
+        return "";
     }
 
     public String getPasswordHash() {

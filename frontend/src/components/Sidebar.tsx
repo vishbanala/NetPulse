@@ -79,7 +79,7 @@ export function Sidebar({
             type="button"
             onClick={onLogout}
             disabled={logoutBusy}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-line px-3 py-2.5 text-sm font-medium text-mist transition hover:border-bad/40 hover:text-bad disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-panel-2 px-3 py-2.5 text-sm font-medium text-snow transition hover:border-bad/40 hover:text-bad disabled:opacity-60"
           >
             <LogOut className="size-4" />
             {logoutBusy ? 'Signing out…' : 'Sign out'}

@@ -28,6 +28,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.netpulse.repository.MonitorScheduleRepository;
+import com.netpulse.security.PublicUrlValidator;
 import com.netpulse.sqs.MonitoringJob;
 import com.netpulse.sqs.MonitoringJobPublisher;
 
@@ -47,12 +48,14 @@ class MonitorSchedulingServiceTest {
     private MonitoringJobPublisher jobPublisher;
 
     private MonitorSchedulingService service;
+    private final PublicUrlValidator publicUrlValidator = new PublicUrlValidator();
 
     @BeforeEach
     void setUp() {
         service = new MonitorSchedulingService(
                 scheduleRepository,
                 jobPublisher,
+                publicUrlValidator,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 50,
                 60);
@@ -241,7 +244,7 @@ class MonitorSchedulingServiceTest {
         UUID monitorId = UUID.fromString("77777777-7777-7777-7777-777777777777");
         UUID jobId = UUID.fromString("88888888-8888-8888-8888-888888888888");
         DueMonitorJob due = new DueMonitorJob(
-                monitorId, jobId, "https://evil.example/phish", NOW, 60);
+                monitorId, jobId, "http://127.0.0.1/", NOW, 60);
 
         when(jobPublisher.isConfigured()).thenReturn(true);
         when(scheduleRepository.ensureSchedules(NOW)).thenReturn(0);

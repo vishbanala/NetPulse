@@ -17,23 +17,6 @@
 #include <sys/types.h>
 #endif
 
-/* Explicit public-URL allowlist — keep in sync with ApprovedMonitorUrls.java.
- * Private/metadata/credential SSRF checks below still apply to every entry. */
-static const char *const ALLOWED_URLS[] = {
-    "https://example.com",
-    "https://example.com/",
-    "https://www.google.com",
-    "https://www.google.com/",
-    "https://google.com",
-    "https://google.com/",
-    "https://httpbin.org/get",
-    "https://httpbin.org/status/200",
-    "https://httpbin.org/status/500",
-    "https://httpbin.org/delay/5",
-    "https://httpbin.org/bytes/100000",
-    NULL
-};
-
 static void set_err(char *errbuf, size_t errbuf_len, const char *msg)
 {
     if (errbuf == NULL || errbuf_len == 0) {
@@ -54,29 +37,20 @@ static int str_ieq(const char *a, const char *b)
     return *a == '\0' && *b == '\0';
 }
 
-static int is_on_allowlist(const char *url)
-{
-    size_t i;
-    for (i = 0; ALLOWED_URLS[i] != NULL; i++) {
-        if (str_ieq(url, ALLOWED_URLS[i])) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/* Parse scheme://[userinfo@]host[:port][/path...] */
 static int parse_url_parts(const char *url,
                            char *scheme, size_t scheme_len,
                            char *host, size_t host_len,
+                           int *port_out,
                            int *has_userinfo)
 {
     const char *p;
     const char *host_start;
     const char *host_end;
     size_t n;
+    int port = -1;
 
     *has_userinfo = 0;
+    *port_out = -1;
 
     p = strstr(url, "://");
     if (p == NULL) {
@@ -95,7 +69,6 @@ static int parse_url_parts(const char *url,
         return -1;
     }
 
-    /* Reject embedded credentials: anything with '@' before the first '/' */
     {
         const char *slash = strchr(host_start, '/');
         const char *at = strchr(host_start, '@');
@@ -116,7 +89,6 @@ static int parse_url_parts(const char *url,
         return -1;
     }
 
-    /* Strip IPv6 brackets if present */
     if (host_start[0] == '[' && host_start[n - 1] == ']') {
         if (n < 3) {
             return -1;
@@ -128,6 +100,24 @@ static int parse_url_parts(const char *url,
         host[n] = '\0';
     }
 
+    if (*host_end == ':') {
+        const char *ps = host_end + 1;
+        port = 0;
+        if (!isdigit((unsigned char)*ps)) {
+            return -1;
+        }
+        while (isdigit((unsigned char)*ps)) {
+            port = port * 10 + (*ps - '0');
+            if (port > 65535) {
+                return -1;
+            }
+            ps++;
+        }
+        if (*ps != '\0' && *ps != '/' && *ps != '?' && *ps != '#') {
+            return -1;
+        }
+    }
+    *port_out = port;
     return 0;
 }
 
@@ -174,33 +164,73 @@ static int parse_ipv4(const char *s, unsigned int out[4])
 
 static int ipv4_is_blocked(unsigned int o[4])
 {
-    /* 0.0.0.0/8 */
     if (o[0] == 0) {
         return 1;
     }
-    /* 10.0.0.0/8 */
     if (o[0] == 10) {
         return 1;
     }
-    /* 127.0.0.0/8 loopback */
     if (o[0] == 127) {
         return 1;
     }
-    /* 169.254.0.0/16 link-local + cloud metadata */
     if (o[0] == 169 && o[1] == 254) {
         return 1;
     }
-    /* 172.16.0.0/12 */
     if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) {
         return 1;
     }
-    /* 192.168.0.0/16 */
     if (o[0] == 192 && o[1] == 168) {
         return 1;
     }
-    /* 100.64.0.0/10 CGNAT */
     if (o[0] == 100 && o[1] >= 64 && o[1] <= 127) {
         return 1;
+    }
+    if (o[0] == 198 && (o[1] == 18 || o[1] == 19)) {
+        return 1;
+    }
+    if (o[0] >= 240) {
+        return 1;
+    }
+    return 0;
+}
+
+static int ipv6_bytes_blocked(const unsigned char *b)
+{
+    int i;
+    int is_unspecified = 1;
+    int is_loopback = 1;
+
+    for (i = 0; i < 16; i++) {
+        if (b[i] != 0) {
+            is_unspecified = 0;
+        }
+    }
+    if (is_unspecified) {
+        return 1;
+    }
+    for (i = 0; i < 15; i++) {
+        if (b[i] != 0) {
+            is_loopback = 0;
+            break;
+        }
+    }
+    if (is_loopback && b[15] == 1) {
+        return 1;
+    }
+    if ((b[0] & 0xfe) == 0xfc) {
+        return 1; /* ULA */
+    }
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) {
+        return 1; /* link-local */
+    }
+    if (b[0] == 0xff) {
+        return 1; /* multicast */
+    }
+    if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+        b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+        b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff) {
+        unsigned int o[4] = { b[12], b[13], b[14], b[15] };
+        return ipv4_is_blocked(o);
     }
     return 0;
 }
@@ -210,10 +240,11 @@ static int host_name_blocked(const char *host)
     if (str_ieq(host, "localhost") ||
         str_ieq(host, "metadata.google.internal") ||
         str_ieq(host, "metadata") ||
+        str_ieq(host, "metadata.google") ||
+        str_ieq(host, "instance-data") ||
         str_ieq(host, "metadata.aws.internal")) {
         return 1;
     }
-    /* Block obvious local suffixes */
     {
         size_t len = strlen(host);
         if (len >= 6 && str_ieq(host + len - 6, ".local")) {
@@ -229,7 +260,7 @@ static int host_name_blocked(const char *host)
     return 0;
 }
 
-static int resolved_addresses_blocked(const char *host)
+static int resolve_public(const char *host, char *ip_out, size_t ip_out_len)
 {
 #ifdef _WIN32
     WSADATA wsa;
@@ -238,8 +269,8 @@ static int resolved_addresses_blocked(const char *host)
     struct addrinfo hints;
     struct addrinfo *res = NULL;
     struct addrinfo *ai;
-    int blocked = 0;
     int rc;
+    int found = 0;
 
 #ifdef _WIN32
     if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
@@ -253,8 +284,6 @@ static int resolved_addresses_blocked(const char *host)
 
     rc = getaddrinfo(host, NULL, &hints, &res);
     if (rc != 0) {
-        /* Fail closed: if we cannot resolve, reject. */
-        blocked = 1;
         goto done;
     }
 
@@ -264,39 +293,35 @@ static int resolved_addresses_blocked(const char *host)
             unsigned char *b = (unsigned char *)&sa->sin_addr.s_addr;
             unsigned int o[4] = { b[0], b[1], b[2], b[3] };
             if (ipv4_is_blocked(o)) {
-                blocked = 1;
-                break;
+                found = 0;
+                goto done;
+            }
+            if (!found && ip_out && ip_out_len > 0) {
+                snprintf(ip_out, ip_out_len, "%u.%u.%u.%u", o[0], o[1], o[2], o[3]);
+                found = 1;
             }
         } else if (ai->ai_family == AF_INET6) {
             struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ai->ai_addr;
             const unsigned char *b = sa6->sin6_addr.s6_addr;
-            /* ::1 loopback */
-            int is_loopback = 1;
-            int i;
-            for (i = 0; i < 15; i++) {
-                if (b[i] != 0) {
-                    is_loopback = 0;
-                    break;
+            char buf[INET6_ADDRSTRLEN];
+            if (ipv6_bytes_blocked(b)) {
+                found = 0;
+                goto done;
+            }
+            if (!found && ip_out && ip_out_len > 0) {
+#ifdef _WIN32
+                if (InetNtopA(AF_INET6, b, buf, sizeof(buf)) == NULL) {
+                    found = 0;
+                    goto done;
                 }
-            }
-            if (is_loopback && b[15] == 1) {
-                blocked = 1;
-                break;
-            }
-            /* fc00::/7 ULA, fe80::/10 link-local */
-            if ((b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80)) {
-                blocked = 1;
-                break;
-            }
-            /* IPv4-mapped IPv6 */
-            if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
-                b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
-                b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff) {
-                unsigned int o[4] = { b[12], b[13], b[14], b[15] };
-                if (ipv4_is_blocked(o)) {
-                    blocked = 1;
-                    break;
+#else
+                if (inet_ntop(AF_INET6, b, buf, sizeof(buf)) == NULL) {
+                    found = 0;
+                    goto done;
                 }
+#endif
+                snprintf(ip_out, ip_out_len, "%s", buf);
+                found = 1;
             }
         }
     }
@@ -310,63 +335,104 @@ done:
         WSACleanup();
     }
 #endif
-    return blocked;
+    return found ? 0 : -1;
+}
+
+static int validate_core(const char *url, char *scheme, size_t scheme_len,
+                         char *host, size_t host_len, int *port_out,
+                         char *errbuf, size_t errbuf_len)
+{
+    int has_userinfo = 0;
+    unsigned int ipv4[4];
+    int port = -1;
+
+    if (url == NULL || url[0] == '\0') {
+        set_err(errbuf, errbuf_len, "URL is empty");
+        return -1;
+    }
+    if (parse_url_parts(url, scheme, scheme_len, host, host_len, &port, &has_userinfo) != 0) {
+        set_err(errbuf, errbuf_len, "URL could not be parsed");
+        return -1;
+    }
+    if (!(str_ieq(scheme, "http") || str_ieq(scheme, "https"))) {
+        set_err(errbuf, errbuf_len, "Only http and https schemes are allowed");
+        return -1;
+    }
+    if (has_userinfo) {
+        set_err(errbuf, errbuf_len, "URLs with embedded credentials are rejected");
+        return -1;
+    }
+    if (port != -1) {
+        int ok = (str_ieq(scheme, "http") && port == 80) ||
+                 (str_ieq(scheme, "https") && port == 443);
+        if (!ok) {
+            set_err(errbuf, errbuf_len, "Only default HTTP/HTTPS ports are allowed");
+            return -1;
+        }
+    }
+    if (host_name_blocked(host)) {
+        set_err(errbuf, errbuf_len, "Hostname is blocked (localhost/internal)");
+        return -1;
+    }
+    if (parse_ipv4(host, ipv4) == 0 && ipv4_is_blocked(ipv4)) {
+        set_err(errbuf, errbuf_len, "Literal private/link-local IP is blocked");
+        return -1;
+    }
+    if (str_ieq(host, "::1") || str_ieq(host, "0:0:0:0:0:0:0:1")) {
+        set_err(errbuf, errbuf_len, "IPv6 loopback is blocked");
+        return -1;
+    }
+    *port_out = port;
+    return 0;
 }
 
 int np_url_is_allowed(const char *url, char *errbuf, size_t errbuf_len)
 {
     char scheme[16];
     char host[256];
-    int has_userinfo = 0;
-    unsigned int ipv4[4];
+    int port = -1;
+    char ip[INET6_ADDRSTRLEN];
 
-    if (url == NULL || url[0] == '\0') {
-        set_err(errbuf, errbuf_len, "URL is empty");
+    if (validate_core(url, scheme, sizeof(scheme), host, sizeof(host), &port,
+                      errbuf, errbuf_len) != 0) {
         return -1;
     }
-
-    if (parse_url_parts(url, scheme, sizeof(scheme), host, sizeof(host),
-                        &has_userinfo) != 0) {
-        set_err(errbuf, errbuf_len, "URL could not be parsed");
-        return -1;
-    }
-
-    if (!(str_ieq(scheme, "http") || str_ieq(scheme, "https"))) {
-        set_err(errbuf, errbuf_len, "Only http and https schemes are allowed");
-        return -1;
-    }
-
-    if (has_userinfo) {
-        set_err(errbuf, errbuf_len, "URLs with embedded credentials are rejected");
-        return -1;
-    }
-
-    if (!is_on_allowlist(url)) {
-        set_err(errbuf, errbuf_len,
-                "URL is not on the approved allowlist (Step 3 restriction)");
-        return -1;
-    }
-
-    if (host_name_blocked(host)) {
-        set_err(errbuf, errbuf_len, "Hostname is blocked (localhost/internal)");
-        return -1;
-    }
-
-    if (parse_ipv4(host, ipv4) == 0 && ipv4_is_blocked(ipv4)) {
-        set_err(errbuf, errbuf_len, "Literal private/link-local IP is blocked");
-        return -1;
-    }
-
-    if (str_ieq(host, "::1") || str_ieq(host, "0:0:0:0:0:0:0:1")) {
-        set_err(errbuf, errbuf_len, "IPv6 loopback is blocked");
-        return -1;
-    }
-
-    if (resolved_addresses_blocked(host)) {
+    if (resolve_public(host, ip, sizeof(ip)) != 0) {
         set_err(errbuf, errbuf_len,
                 "Resolved address is private/internal or DNS lookup failed");
         return -1;
     }
+    return 0;
+}
 
+int np_url_pin_public_resolve(const char *url,
+                              char *resolve_rule, size_t resolve_rule_len,
+                              char *errbuf, size_t errbuf_len)
+{
+    char scheme[16];
+    char host[256];
+    char ip[INET6_ADDRSTRLEN];
+    int port = -1;
+    int use_port;
+
+    if (resolve_rule == NULL || resolve_rule_len < 8) {
+        set_err(errbuf, errbuf_len, "resolve buffer too small");
+        return -1;
+    }
+    if (validate_core(url, scheme, sizeof(scheme), host, sizeof(host), &port,
+                      errbuf, errbuf_len) != 0) {
+        return -1;
+    }
+    if (resolve_public(host, ip, sizeof(ip)) != 0) {
+        set_err(errbuf, errbuf_len,
+                "Resolved address is private/internal or DNS lookup failed");
+        return -1;
+    }
+    use_port = port;
+    if (use_port < 0) {
+        use_port = str_ieq(scheme, "https") ? 443 : 80;
+    }
+    /* CURLOPT_RESOLVE format: host:port:address */
+    snprintf(resolve_rule, resolve_rule_len, "%s:%d:%s", host, use_port, ip);
     return 0;
 }

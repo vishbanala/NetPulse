@@ -38,10 +38,15 @@ import com.netpulse.controller.HealthController;
 import com.netpulse.controller.MonitorController;
 import com.netpulse.controller.RootHealthController;
 import com.netpulse.exception.ApiExceptionHandler;
+import com.netpulse.mail.MailSender;
 import com.netpulse.model.Monitor;
+import com.netpulse.model.UserAccount;
+import com.netpulse.repository.AuthTokenRepository;
 import com.netpulse.repository.IncidentRepository;
-import com.netpulse.repository.MonitorRepository;
 import com.netpulse.repository.MonitoringCheckRepository;
+import com.netpulse.repository.UserRepository;
+import com.netpulse.service.AuthService;
+import com.netpulse.service.MonitorService;
 import com.netpulse.sqs.MonitoringJobPublisher;
 
 @WebMvcTest(controllers = {
@@ -50,11 +55,18 @@ import com.netpulse.sqs.MonitoringJobPublisher;
         HealthController.class,
         RootHealthController.class
 })
-@Import({SecurityConfig.class, ApiExceptionHandler.class, LoginRateLimiter.class, ClockConfig.class})
+@Import({
+        SecurityConfig.class,
+        ApiExceptionHandler.class,
+        AuthRateLimiter.class,
+        AuthService.class,
+        ClockConfig.class,
+        PublicUrlValidator.class
+})
 @TestPropertySource(properties = {
         "netpulse.security.mode=AUTHENTICATED",
-        "netpulse.admin.username=admin",
-        // BCrypt for plaintext "password" (Spring Security documentation example hash)
+        "netpulse.admin.email=admin@example.com",
+        "netpulse.admin.username=admin@example.com",
         "netpulse.admin.password-hash=$2a$10$dXJ3SW6G7P50lGmMkkmwe.20cQQubK3.HZWzG3YB1tlRy.fqvM/BG",
         "netpulse.cors.allowed-origins=http://localhost:5173",
         "netpulse.session.cookie-same-site=Lax",
@@ -64,13 +76,21 @@ import com.netpulse.sqs.MonitoringJobPublisher;
 })
 class AuthSecurityWebTest {
 
+    private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID MONITOR_ID = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    private static final String ADMIN_HASH = "$2a$10$dXJ3SW6G7P50lGmMkkmwe.20cQQubK3.HZWzG3YB1tlRy.fqvM/BG";
 
     @Autowired
     private MockMvc mockMvc;
 
     @MockitoBean
-    private MonitorRepository monitorRepository;
+    private UserRepository userRepository;
+    @MockitoBean
+    private AuthTokenRepository authTokenRepository;
+    @MockitoBean
+    private MailSender mailSender;
+    @MockitoBean
+    private MonitorService monitorService;
     @MockitoBean
     private MonitoringCheckRepository monitoringCheckRepository;
     @MockitoBean
@@ -79,21 +99,19 @@ class AuthSecurityWebTest {
     private MonitoringJobPublisher monitoringJobPublisher;
 
     @BeforeEach
-    void verifyKnownHash() {
-        // Guard against accidental hash/password drift in this fixture.
+    void stubAdminUser() {
         org.assertj.core.api.Assertions.assertThat(
-                new BCryptPasswordEncoder().matches(
-                        "password",
-                        "$2a$10$dXJ3SW6G7P50lGmMkkmwe.20cQQubK3.HZWzG3YB1tlRy.fqvM/BG"))
-                .isTrue();
+                new BCryptPasswordEncoder().matches("password", ADMIN_HASH)).isTrue();
+        when(mailSender.isConfigured()).thenReturn(false);
+        when(userRepository.findByEmailNormalized("admin@example.com")).thenReturn(Optional.of(adminAccount()));
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(adminAccount()));
     }
 
     @Test
     void healthEndpointsRemainPublic() throws Exception {
         mockMvc.perform(get("/health"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("UP"))
-                .andExpect(jsonPath("$.securityMode").doesNotExist());
+                .andExpect(jsonPath("$.status").value("UP"));
 
         mockMvc.perform(get("/api/health"))
                 .andExpect(status().isOk())
@@ -109,8 +127,7 @@ class AuthSecurityWebTest {
     @Test
     void loginThenAuthenticatedReadWorks() throws Exception {
         MockHttpSession session = loginAsAdmin();
-
-        when(monitorRepository.findAll()).thenReturn(List.of(sampleMonitor()));
+        when(monitorService.listForUser(USER_ID)).thenReturn(List.of(sampleMonitor()));
 
         mockMvc.perform(get("/api/monitors").session(session))
                 .andExpect(status().isOk())
@@ -125,7 +142,7 @@ class AuthSecurityWebTest {
                         .session(session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name":"Example","url":"https://example.com","intervalSeconds":60,"enabled":true}
+                                {"name":"Example","url":"https://example.com","intervalSeconds":300,"enabled":true}
                                 """))
                 .andExpect(status().isForbidden());
     }
@@ -133,15 +150,15 @@ class AuthSecurityWebTest {
     @Test
     void authenticatedMutatingRequestWithCsrfSucceeds() throws Exception {
         MockHttpSession session = loginAsAdmin();
-        when(monitorRepository.update(eq(MONITOR_ID), any(), any(), anyInt(), anyBoolean()))
-                .thenReturn(Optional.of(sampleMonitor()));
+        when(monitorService.update(eq(USER_ID), eq(MONITOR_ID), any(), any(), anyInt(), anyBoolean()))
+                .thenReturn(sampleMonitor());
 
         mockMvc.perform(put("/api/monitors/{id}", MONITOR_ID)
                         .with(csrf())
                         .session(session)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name":"Example","url":"https://example.com","intervalSeconds":60,"enabled":true}
+                                {"name":"Example","url":"https://example.com","intervalSeconds":300,"enabled":true}
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("Example"));
@@ -166,10 +183,65 @@ class AuthSecurityWebTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"username":"admin","password":"wrong-password"}
+                                {"email":"admin@example.com","password":"wrong-password"}
                                 """))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.message").value("Invalid username or password"));
+                .andExpect(jsonPath("$.message").value("Invalid email or password"));
+    }
+
+    @Test
+    void meDoesNotExposePasswordHash() throws Exception {
+        MockHttpSession session = loginAsAdmin();
+        mockMvc.perform(get("/api/auth/me").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("admin@example.com"))
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.passwordHash").doesNotExist());
+    }
+
+    @Test
+    void registerCreatesUsableAccountWithoutExposingHash() throws Exception {
+        when(userRepository.existsByEmailNormalized("new@example.com")).thenReturn(false);
+        UserAccount created = new UserAccount();
+        created.setId(UUID.fromString("22222222-2222-2222-2222-222222222222"));
+        created.setEmail("new@example.com");
+        created.setPasswordHash(ADMIN_HASH);
+        created.setRole(UserAccount.ROLE_USER);
+        when(userRepository.insert(eq("new@example.com"), any(), eq(UserAccount.ROLE_USER), eq(null)))
+                .thenReturn(created);
+
+        mockMvc.perform(get("/api/auth/csrf")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/auth/register")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email":"new@example.com","password":"long-enough-password"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.registered").value(true))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("sign in")))
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.passwordHash").doesNotExist());
+    }
+
+    @Test
+    void featuresReportsPasswordResetDisabledWithoutSmtp() throws Exception {
+        mockMvc.perform(get("/api/auth/features"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.passwordResetEnabled").value(false))
+                .andExpect(jsonPath("$.registrationEnabled").value(true));
+    }
+
+    @Test
+    void forgotPasswordUnavailableWithoutSmtp() throws Exception {
+        mockMvc.perform(get("/api/auth/csrf")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/auth/forgot-password")
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email":"admin@example.com"}
+                                """))
+                .andExpect(status().isServiceUnavailable());
     }
 
     private MockHttpSession loginAsAdmin() throws Exception {
@@ -179,11 +251,11 @@ class AuthSecurityWebTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"username":"admin","password":"password"}
+                                {"email":"admin@example.com","password":"password"}
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authenticated").value(true))
-                .andExpect(jsonPath("$.username").value("admin"))
+                .andExpect(jsonPath("$.email").value("admin@example.com"))
                 .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist())
                 .andReturn();
@@ -191,12 +263,23 @@ class AuthSecurityWebTest {
         return (MockHttpSession) login.getRequest().getSession(false);
     }
 
+    private static UserAccount adminAccount() {
+        UserAccount account = new UserAccount();
+        account.setId(USER_ID);
+        account.setEmail("admin@example.com");
+        account.setPasswordHash(ADMIN_HASH);
+        account.setRole(UserAccount.ROLE_ADMIN);
+        account.setEmailVerifiedAt(OffsetDateTime.of(2026, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC));
+        return account;
+    }
+
     private static Monitor sampleMonitor() {
         Monitor m = new Monitor();
         m.setId(MONITOR_ID);
+        m.setUserId(USER_ID);
         m.setName("Example");
         m.setUrl("https://example.com");
-        m.setIntervalSeconds(60);
+        m.setIntervalSeconds(300);
         m.setEnabled(true);
         m.setCreatedAt(OffsetDateTime.of(2026, 11, 10, 12, 0, 0, 0, ZoneOffset.UTC));
         return m;

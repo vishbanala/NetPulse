@@ -85,7 +85,8 @@ void np_monitor_print(const NpMonitorResult *result)
     }
 }
 
-static void apply_common_opts(CURL *curl, const char *url, long timeout_ms)
+static void apply_common_opts(CURL *curl, const char *url, long timeout_ms,
+                              struct curl_slist *resolve_list)
 {
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L); /* no redirects */
@@ -95,6 +96,10 @@ static void apply_common_opts(CURL *curl, const char *url, long timeout_ms)
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, timeout_ms);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    if (resolve_list != NULL) {
+        /* Pin connect IP from pre-validated public resolution (DNS rebinding mitigation). */
+        curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve_list);
+    }
 #if LIBCURL_VERSION_NUM >= 0x074700
     curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 0L);
 #endif
@@ -139,13 +144,14 @@ static void classify_curl_error(NpMonitorResult *out, CURLcode rc)
 }
 
 static int perform_head(CURL *curl, const char *url, long timeout_ms,
+                        struct curl_slist *resolve_list,
                         NpMonitorResult *out, double *elapsed_s, int *try_get)
 {
     CURLcode rc;
     long http_status = 0;
 
     *try_get = 0;
-    apply_common_opts(curl, url, timeout_ms);
+    apply_common_opts(curl, url, timeout_ms, resolve_list);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 0L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
@@ -170,6 +176,7 @@ static int perform_head(CURL *curl, const char *url, long timeout_ms,
 }
 
 static int perform_get_bounded(CURL *curl, const char *url, long timeout_ms,
+                               struct curl_slist *resolve_list,
                                NpMonitorResult *out, double *elapsed_s)
 {
     CURLcode rc;
@@ -177,7 +184,7 @@ static int perform_get_bounded(CURL *curl, const char *url, long timeout_ms,
     struct NpBodyCap cap;
 
     memset(&cap, 0, sizeof(cap));
-    apply_common_opts(curl, url, timeout_ms);
+    apply_common_opts(curl, url, timeout_ms, resolve_list);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_capped);
@@ -210,6 +217,8 @@ int np_monitor_check(const char *url, long timeout_ms, NpMonitorResult *out)
 {
     CURL *curl = NULL;
     char guard_err[256];
+    char resolve_rule[512];
+    struct curl_slist *resolve_list = NULL;
     double elapsed = 0.0;
     int try_get = 0;
     int code;
@@ -234,10 +243,18 @@ int np_monitor_check(const char *url, long timeout_ms, NpMonitorResult *out)
     }
 
     guard_err[0] = '\0';
+    resolve_rule[0] = '\0';
     if (np_url_is_allowed(url, guard_err, sizeof(guard_err)) != 0) {
         out->health = NP_STATUS_REJECTED;
         snprintf(out->message, sizeof(out->message), "%s",
                  guard_err[0] ? guard_err : "URL rejected");
+        return (int)out->health;
+    }
+    if (np_url_pin_public_resolve(url, resolve_rule, sizeof(resolve_rule),
+                                  guard_err, sizeof(guard_err)) != 0) {
+        out->health = NP_STATUS_REJECTED;
+        snprintf(out->message, sizeof(out->message), "%s",
+                 guard_err[0] ? guard_err : "URL resolve pin failed");
         return (int)out->health;
     }
 
@@ -248,16 +265,24 @@ int np_monitor_check(const char *url, long timeout_ms, NpMonitorResult *out)
         return (int)out->health;
     }
 
-    code = perform_head(curl, url, timeout_ms, out, &elapsed, &try_get);
+    resolve_list = curl_slist_append(NULL, resolve_rule);
+    if (resolve_list == NULL) {
+        curl_easy_cleanup(curl);
+        out->health = NP_STATUS_ERROR;
+        snprintf(out->message, sizeof(out->message), "curl_slist_append failed");
+        return (int)out->health;
+    }
+
+    code = perform_head(curl, url, timeout_ms, resolve_list, out, &elapsed, &try_get);
     out->response_time_ms = elapsed * 1000.0;
 
     if (try_get) {
-        /* Reset easy handle options between HEAD and GET. */
         curl_easy_reset(curl);
-        code = perform_get_bounded(curl, url, timeout_ms, out, &elapsed);
+        code = perform_get_bounded(curl, url, timeout_ms, resolve_list, out, &elapsed);
         out->response_time_ms = elapsed * 1000.0;
     }
 
+    curl_slist_free_all(resolve_list);
     curl_easy_cleanup(curl);
     return code;
 }

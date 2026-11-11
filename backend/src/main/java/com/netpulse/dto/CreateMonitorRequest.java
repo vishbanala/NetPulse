@@ -1,7 +1,5 @@
 package com.netpulse.dto;
 
-import com.netpulse.security.ApprovedMonitorUrls;
-
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -20,7 +18,7 @@ public class CreateMonitorRequest {
     private String url;
 
     @NotNull
-    @Min(10)
+    @Min(300)
     @Max(86400)
     private Integer intervalSeconds;
 
@@ -65,22 +63,5 @@ public class CreateMonitorRequest {
         }
         String trimmed = url.trim().toLowerCase();
         return trimmed.startsWith("http://") || trimmed.startsWith("https://");
-    }
-
-    /**
-     * Rejects URLs the scheduler/worker would abandon, so monitors cannot sit in
-     * "Waiting" forever (e.g. https://www.google.com before it was allowlisted).
-     */
-    @AssertTrue(message = "url is not on the approved monitor allowlist")
-    public boolean isUrlAllowlisted() {
-        if (url == null || url.isBlank()) {
-            return true; // @NotBlank owns emptiness
-        }
-        String trimmed = url.trim();
-        String lower = trimmed.toLowerCase();
-        if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
-            return true; // scheme validator owns that error
-        }
-        return ApprovedMonitorUrls.isApproved(trimmed);
     }
 }

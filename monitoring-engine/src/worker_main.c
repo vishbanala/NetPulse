@@ -216,7 +216,7 @@ int main(int argc, char **argv)
 
         if (np_url_is_allowed(job.url, guard_err, sizeof(guard_err)) != 0) {
             fprintf(stderr, "Rejected URL for jobId=%s: %s\n", job.job_id, guard_err);
-            /* Persist a failed check then delete so invalid allowlist drift does not loop forever. */
+            /* Persist a failed check then delete so invalid URL policy drift does not loop forever. */
             memset(&result, 0, sizeof(result));
             snprintf(result.url, sizeof(result.url), "%s", job.url);
             result.health = NP_STATUS_REJECTED;

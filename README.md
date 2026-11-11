@@ -14,13 +14,13 @@ On the free-tier deployment, a GitHub Actions workflow periodically runs a one-s
 
 ## Features
 
-- **Website monitoring** — HTTP/HTTPS availability checks for allowlisted URLs
+- **Website monitoring** — HTTP/HTTPS availability checks for public URLs (SSRF-hardened)
 - **Uptime tracking** — health, response times, check history, and stats in the dashboard
 - **Incident detection** — open after two consecutive failures; resolve after one success
 - **Asynchronous processing** — Java scheduling publishes jobs to Amazon SQS; the C worker consumes them
-- **Monitor management** — create, update, pause, and delete monitors in the UI
-- **Authentication** — production management uses Spring Security sessions (BCrypt, HttpOnly cookies, CSRF)
-- **Security controls** — URL allowlisting, SSRF guards, no automatic redirects, timeouts, bounded response reads
+- **Monitor management** — per-user create/update/pause/delete (max 3 enabled; min 5-minute interval; site-wide enabled cap)
+- **Authentication** — public register/login with Spring Security sessions (BCrypt, HttpOnly cookies, CSRF); optional SMTP password reset
+- **Security controls** — public-URL SSRF validation with DNS pin-IP in the C worker, no automatic redirects, timeouts, bounded response reads
 - **Interactive demo** — sample UI with `VITE_DEMO_MODE=true` (localStorage only; no live checks)
 
 ## Tech Stack
@@ -54,7 +54,7 @@ flowchart TD
 
 ### Monitoring workflow
 
-1. An admin creates a monitor in the dashboard; Spring Boot validates the URL against the allowlist and stores it in PostgreSQL.
+1. A signed-in user creates a monitor in the dashboard; Spring Boot validates the public URL (SSRF policy) and stores it under that user’s ownership.
 2. GitHub Actions starts a headless Java **schedule-once** run (`NETPULSE_SCHEDULE_ONCE=true`).
 3. The scheduler claims due rows with `FOR UPDATE SKIP LOCKED` and publishes jobs to SQS.
 4. The same workflow runs the C worker, which long-polls SQS, probes each URL (HEAD, with bounded GET fallback), and writes results via PostgreSQL.
@@ -67,9 +67,9 @@ On Render Free, keep `NETPULSE_SCHEDULER_ENABLED=false` so a waking web instance
 
 - **Queue-backed execution** — scheduling and probing fail independently; SQS buffers work.
 - **Transactional scheduling** — PostgreSQL leases and stable `pending_job_id` values reduce duplicate publishes under concurrency.
-- **Native worker** — C + libcurl/libpq with allowlisting, timeouts, no redirect following, and capped body reads so large healthy pages (for example Google) are not marked down by size limits.
+- **Native worker** — C + libcurl/libpq with public-IP resolve-and-pin (`CURLOPT_RESOLVE`), timeouts, no redirect following, and capped body reads so large healthy pages are not marked down by size limits.
 - **Incidents** — two consecutive failures open an incident; one success resolves it.
-- **Production auth** — `NETPULSE_SECURITY_MODE=AUTHENTICATED` with BCrypt admin hash, secure session cookies, and CSRF.
+- **Production auth** — `NETPULSE_SECURITY_MODE=AUTHENTICATED` with DB-backed users, bootstrap admin from env, secure session cookies, and CSRF.
 
 ## Repository Layout
 
@@ -88,7 +88,7 @@ docs/                 Render and GitHub Actions deployment notes
 - JDK 17+ (21 preferred) and Maven
 - Node.js 20+
 - `gcc`, `make`, libcurl, and libpq (MSYS2 UCRT64 on Windows, or Linux packages)
-- Supabase PostgreSQL with migrations `001`–`006` applied (`backend/db/migrations/`)
+- Supabase PostgreSQL with migrations `001`–`008` applied (`backend/db/migrations/`)
 - AWS SQS queue in `us-east-2` and credentials via the default provider chain
 
 ### 1. Configure environment
@@ -153,13 +153,14 @@ Production builds the SPA into the Spring Boot jar (same origin). Demo static ho
 | Job queue | Amazon SQS |
 | Interactive demo | Render Static Site (`VITE_DEMO_MODE=true`) |
 
-Render production expects `NETPULSE_SECURITY_MODE=AUTHENTICATED`, secure cookies (`SameSite=Lax`), and `NETPULSE_SCHEDULER_ENABLED=false` when Actions owns scheduling. See [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md) and [`docs/FREE_DEPLOY_GITHUB_ACTIONS.md`](docs/FREE_DEPLOY_GITHUB_ACTIONS.md).
+Render production expects `NETPULSE_SECURITY_MODE=AUTHENTICATED`, secure cookies (`SameSite=Lax`), and `NETPULSE_SCHEDULER_ENABLED=false` when Actions owns scheduling. See [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md), [`docs/FREE_DEPLOY_GITHUB_ACTIONS.md`](docs/FREE_DEPLOY_GITHUB_ACTIONS.md), and multi-user rollout notes in [`docs/MULTIUSER_ROLLOUT.md`](docs/MULTIUSER_ROLLOUT.md).
 
 ### Limitations
 
 - GitHub Actions cron can drift or skip under load.
 - Render Free may sleep when idle (cold starts for the dashboard).
-- Only allowlisted URLs can be monitored.
+- Only globally routable http(s) URLs on ports 80/443 are accepted (SSRF policy).
+- Free-tier Actions capacity bounds how many enabled monitors the fleet can check.
 - The demo uses sample data and does not run real checks.
 - Provider free-tier quotas and pricing still apply.
 
@@ -171,7 +172,7 @@ cd monitoring-engine && make test
 cd frontend && npm test && npm run build
 ```
 
-Coverage includes allowlist/URL validation, scheduling leases, HTTP success/failure/timeout classification, large healthy responses, auth/CSRF paths, and worker job parsing.
+Coverage includes public-URL/SSRF validation, ownership isolation, scheduling leases, HTTP success/failure/timeout classification, large healthy responses, auth/CSRF paths, and worker job parsing.
 
 ## Live Applications
 
