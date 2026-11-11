@@ -10,6 +10,44 @@
 --
 -- This migration NEVER embeds a default/known password hash.
 -- AdminUserBootstrap (AUTHENTICATED startup) re-upserts the same admin from env.
+--
+-- Apply inside a single PostgreSQL transaction with 008 (see Apply-MultiuserMigrations.ps1)
+-- so any failure rolls back all DDL and DML from this upgrade.
+
+-- Validate bootstrap admin BEFORE any schema changes when legacy monitors exist.
+DO $$
+DECLARE
+    monitor_count INTEGER;
+    users_exist BOOLEAN;
+    admin_email TEXT;
+    admin_hash TEXT;
+BEGIN
+    SELECT COUNT(*) INTO monitor_count FROM monitors;
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'users'
+    ) INTO users_exist;
+
+    IF monitor_count > 0 AND NOT users_exist THEN
+        admin_email := nullif(lower(trim(current_setting('netpulse.admin_email', true))), '');
+        admin_hash := nullif(trim(current_setting('netpulse.admin_password_hash', true)), '');
+
+        IF admin_email IS NULL OR admin_hash IS NULL THEN
+            RAISE EXCEPTION
+                'Existing monitors require a bootstrap admin in this session BEFORE schema changes. Set netpulse.admin_email and netpulse.admin_password_hash (BCrypt from NETPULSE_ADMIN_*) via set_config or Apply-MultiuserMigrations.ps1. No default password is embedded in this migration.';
+        END IF;
+
+        IF position('@' IN admin_email) < 2 THEN
+            RAISE EXCEPTION
+                'netpulse.admin_email must look like an email address before schema changes.';
+        END IF;
+
+        IF admin_hash !~ '^\$2[aby]?\$\d{2}\$[./A-Za-z0-9]{53}$' THEN
+            RAISE EXCEPTION
+                'netpulse.admin_password_hash is not a valid BCrypt hash before schema changes.';
+        END IF;
+    END IF;
+END $$;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -82,7 +120,8 @@ BEGIN
         admin_email := nullif(lower(trim(current_setting('netpulse.admin_email', true))), '');
         admin_hash := nullif(trim(current_setting('netpulse.admin_password_hash', true)), '');
 
-        IF admin_email IS NULL OR admin_hash IS NULL OR left(admin_hash, 2) <> '$2' THEN
+        IF admin_email IS NULL OR admin_hash IS NULL
+           OR admin_hash !~ '^\$2[aby]?\$\d{2}\$[./A-Za-z0-9]{53}$' THEN
             RAISE EXCEPTION
                 'Existing monitors require a bootstrap admin in this session. Before re-running 007, set netpulse.admin_email and netpulse.admin_password_hash (BCrypt from NETPULSE_ADMIN_*) via set_config or Apply-MultiuserMigrations.ps1. No default password is embedded in this migration.';
         END IF;

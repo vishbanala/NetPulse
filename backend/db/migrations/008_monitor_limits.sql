@@ -1,4 +1,5 @@
 -- Raise minimum monitor interval to 5 minutes and document per-user active cap (enforced in app TX).
+-- Apply in the same PostgreSQL transaction as 007 (see Apply-MultiuserMigrations.ps1).
 
 UPDATE monitors
 SET interval_seconds = 300

@@ -5,15 +5,20 @@ Do not merge, deploy, or migrate until you explicitly approve.
 
 ## What changed for a clean 007
 
-Migration `007` can complete in **one session**:
+`Apply-MultiuserMigrations.ps1` applies **007 + 008 in one PostgreSQL transaction**:
 
-1. Bind admin from env via `set_config` (no embedded passwords).
-2. Create `users` / token tables, add `monitors.user_id`.
-3. If monitors exist and `users` is empty → insert that admin → own all monitors.
-4. Enforce `NOT NULL` + FK.
-5. Then apply `008` (interval floor 300s).
+1. **Preflight** validates admin email + BCrypt hash in PowerShell (no DB DDL yet).
+2. Bind admin from env via `set_config`, then re-validate in SQL (still before DDL).
+3. Migration `007` validates session admin again, then creates `users` / token tables and `monitors.user_id`.
+4. If monitors exist and `users` is empty → insert that admin → own all monitors.
+5. Enforce `NOT NULL` + FK.
+6. Apply `008` (interval floor 300s) in the **same** transaction, then `COMMIT`.
 
-Helper (Windows): `backend/db/scripts/Apply-MultiuserMigrations.ps1`
+Any failure aborts the transaction — no leftover `users` table or nullable `user_id`.  
+The script exits nonzero on failure and never prints credentials.
+
+Helper (Windows): `backend/db/scripts/Apply-MultiuserMigrations.ps1`  
+Atomicity harness (isolated Docker clones of a dump): `backend/db/tests/Test-MultiuserMigrationAtomicity.ps1`
 
 ## Scheduler / worker compatibility
 
